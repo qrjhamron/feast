@@ -1,0 +1,37 @@
+# Go binaries (root only)
+/bot
+/ping
+/mc-bot
+/mc-ping
+/smoke
+
+# Environment files
+.env
+.env.*
+
+# Local Minecraft server files (if any are created)
+server.jar
+paper*.jar
+eula.txt
+server.properties
+world/
+world_nether/
+world_the_end/
+plugins/
+logs/
+crash-reports/
+banned-ips.json
+banned-players.json
+ops.json
+usercache.json
+whitelist.json
+cache/
+libraries/
+versions/
+
+# Go specific
+vendor/
+*.exe
+*.test
+*.prof
+coverage.out
