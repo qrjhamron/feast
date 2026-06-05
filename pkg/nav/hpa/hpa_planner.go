@@ -13,10 +13,15 @@ import (
 )
 
 type HPAPlanResult struct {
-	Status       planner.PlanStatus
-	AbstractPath []AbstractNode
-	Refiner      *LazyRefiner
-	Err          error
+	Status             planner.PlanStatus
+	AbstractPath       []AbstractNode
+	Refiner            *LazyRefiner
+	Err                error
+	StartConnected     bool
+	GoalConnected      bool
+	StartComponentSize int
+	GoalComponentSize  int
+	SameComponent      bool
 }
 
 type HPAPlanner struct {
@@ -134,6 +139,24 @@ func (p *HPAPlanner) PlanWithContext(ctx context.Context, start, end [3]int, goa
 		}
 	}
 
+	p.graph.mu.RLock()
+	startConnected := len(p.graph.edges[startNodeID]) > 0
+	goalConnected := false
+	for u := 0; u < len(p.graph.edges); u++ {
+		for _, edge := range p.graph.edges[u] {
+			if edge.To == goalNodeID {
+				goalConnected = true
+				break
+			}
+		}
+		if goalConnected {
+			break
+		}
+	}
+	p.graph.mu.RUnlock()
+
+	startCompSize, goalCompSize, sameComp := computeComponents(p.graph, startNodeID, goalNodeID)
+
 	// Abstract A*
 	pq := make(astarQueue, 0)
 	heap.Init(&pq)
@@ -155,7 +178,15 @@ func (p *HPAPlanner) PlanWithContext(ctx context.Context, start, end [3]int, goa
 
 	for pq.Len() > 0 {
 		if err := ctx.Err(); err != nil {
-			return HPAPlanResult{Status: planner.PlanNoPath, Err: err}
+			return HPAPlanResult{
+				Status:             planner.PlanNoPath,
+				Err:                err,
+				StartConnected:     startConnected,
+				GoalConnected:      goalConnected,
+				StartComponentSize: startCompSize,
+				GoalComponentSize:  goalCompSize,
+				SameComponent:      sameComp,
+			}
 		}
 		curr := heap.Pop(&pq).(*astarNode)
 		delete(open, curr.id)
@@ -202,7 +233,14 @@ func (p *HPAPlanner) PlanWithContext(ctx context.Context, start, end [3]int, goa
 	}
 
 	if goalState == nil {
-		return HPAPlanResult{Status: planner.PlanNoPath}
+		return HPAPlanResult{
+			Status:             planner.PlanNoPath,
+			StartConnected:     startConnected,
+			GoalConnected:      goalConnected,
+			StartComponentSize: startCompSize,
+			GoalComponentSize:  goalCompSize,
+			SameComponent:      sameComp,
+		}
 	}
 
 	var path []AbstractNode
@@ -227,9 +265,14 @@ func (p *HPAPlanner) PlanWithContext(ctx context.Context, start, end [3]int, goa
 	}
 
 	return HPAPlanResult{
-		Status:       planner.PlanFound,
-		AbstractPath: path,
-		Refiner:      refiner,
+		Status:             planner.PlanFound,
+		AbstractPath:       path,
+		Refiner:            refiner,
+		StartConnected:     startConnected,
+		GoalConnected:      goalConnected,
+		StartComponentSize: startCompSize,
+		GoalComponentSize:  goalCompSize,
+		SameComponent:      sameComp,
 	}
 }
 
@@ -313,4 +356,55 @@ func (r *LazyRefiner) Invalidate(blockPos [3]int) {
 		// Mark for replan
 		r.needsReplan = true
 	}
+}
+
+// computeComponents finds the component size and whether start and goal are in the same component.
+func computeComponents(g *AbstractGraph, startID, goalID uint32) (startSize int, goalSize int, same bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	n := len(g.nodes)
+	if int(startID) >= n || int(goalID) >= n {
+		return 0, 0, false
+	}
+
+	// Build undirected adjacency list
+	adj := make([][]uint32, n)
+	for u := 0; u < n; u++ {
+		for _, edge := range g.edges[u] {
+			v := edge.To
+			if int(v) >= n {
+				continue
+			}
+			adj[u] = append(adj[u], v)
+			adj[v] = append(adj[v], uint32(u))
+		}
+	}
+
+	// BFS helper
+	bfs := func(root uint32) map[uint32]bool {
+		visited := make(map[uint32]bool)
+		visited[root] = true
+		queue := []uint32{root}
+		for len(queue) > 0 {
+			curr := queue[0]
+			queue = queue[1:]
+			for _, neighbor := range adj[curr] {
+				if !visited[neighbor] {
+					visited[neighbor] = true
+					queue = append(queue, neighbor)
+				}
+			}
+		}
+		return visited
+	}
+
+	startVisited := bfs(startID)
+	if startVisited[goalID] {
+		size := len(startVisited)
+		return size, size, true
+	}
+
+	goalVisited := bfs(goalID)
+	return len(startVisited), len(goalVisited), false
 }

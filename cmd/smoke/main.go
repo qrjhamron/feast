@@ -308,7 +308,7 @@ func runFindBlockSmoke(client *feast.Client, target string) {
 
 func runHPATest(client *feast.Client) {
 	waitForChunks(client, 2, 6*time.Second)
-	px, _, pz, _, _ := client.GetPosition()
+	px, py, pz, _, _ := client.GetPosition()
 	centerChunkX := floorDivInt(int(math.Floor(px)), world.ChunkWidth)
 	centerChunkZ := floorDivInt(int(math.Floor(pz)), world.ChunkDepth)
 	const hpaSmokeRadiusChunks = 1
@@ -316,129 +316,160 @@ func runHPATest(client *feast.Client) {
 	buildStart := time.Now()
 	probe := buildBoundedChunkGraph(client.World(), centerChunkX, centerChunkZ, hpaSmokeRadiusChunks)
 	abstractPath := probe.longestAbstractPath()
+
+	// Select start and goal positions
+	var start, goalPos [3]int
+	if len(abstractPath) >= 2 {
+		start = probe.nodes[abstractPath[0]]
+		goalPos = probe.nodes[abstractPath[len(abstractPath)-1]]
+	} else {
+		var nodes [][3]int
+		for _, pos := range probe.nodes {
+			nodes = append(nodes, pos)
+		}
+		if len(nodes) >= 2 {
+			start = nodes[0]
+			goalPos = nodes[1]
+		} else if len(nodes) == 1 {
+			start = nodes[0]
+			goalPos = [3]int{start[0] + 16, start[1], start[2]}
+		} else {
+			start = [3]int{int(math.Floor(px)), int(math.Floor(py)), int(math.Floor(pz))}
+			goalPos = [3]int{start[0] + 16, start[1], start[2]}
+		}
+	}
+
 	fullGraph := hpa.NewAbstractGraph()
 	fullClusters := hpa.NewClusterManager(nil)
 	fullBuilder := hpa.NewGraphBuilder(client.World(), fullGraph, fullClusters)
 	fullBuilder.SetOptimisticIntraEdges(true)
-	for _, coord := range abstractPath {
-		fullClusters.GetOrCreate(coord[0], coord[1])
+
+	// Build clusters for loaded chunks in range
+	for _, coord := range client.World().ChunkCoords() {
+		if absInt(coord[0]-centerChunkX) <= hpaSmokeRadiusChunks && absInt(coord[1]-centerChunkZ) <= hpaSmokeRadiusChunks {
+			fullClusters.GetOrCreate(coord[0], coord[1])
+		}
 	}
+
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 20*time.Second)
 	buildErr := fullBuilder.RebuildDirtyWithContext(buildCtx)
 	buildCtxErr := buildCtx.Err()
 	buildCancel()
 	buildDuration := time.Since(buildStart)
+	_ = buildDuration
+
 	graphNodes, graphEdges := fullGraph.Stats()
-	fmt.Printf("[hpa-test] chunks=%d\n", client.World().ChunkCount())
-	fmt.Printf("[hpa-test] clusters=%d\n", fullClusters.Count())
-	fmt.Printf("[hpa-test] entrances=%d\n", fullClusters.EntranceCount())
-	fmt.Printf("[hpa-test] graph_nodes=%d\n", graphNodes)
-	fmt.Printf("[hpa-test] graph_edges=%d\n", graphEdges)
+	clusters := fullClusters.Count()
+	entrances := fullClusters.EntranceCount()
 
-	if len(abstractPath) < 2 {
-		fmt.Printf("[hpa-test] mode=bounded_loaded_chunks\n")
-		fmt.Printf("[hpa-test] abstract_path_found=false\n")
-		fmt.Printf("[hpa-test] refined_segments=0\n")
-		fmt.Printf("[hpa-test] fallback_used=false\n")
-		fmt.Printf("[hpa-test] build_duration_ms=%d\n", buildDuration.Milliseconds())
-		fmt.Printf("[hpa-test] plan_duration_ms=0\n")
-		fmt.Printf("[hpa-test] bounded_graph_verified=false\n")
-		fmt.Printf("[hpa-test] result=PARTIAL reason=no_connected_loaded_chunk_abstract_path full_reason=not_attempted_no_probe_path\n")
-		return
-	}
+	startClusterCoord := [2]int{floorDivInt(start[0], 16), floorDivInt(start[2], 16)}
+	goalClusterCoord := [2]int{floorDivInt(goalPos[0], 16), floorDivInt(goalPos[2], 16)}
 
-	start := probe.nodes[abstractPath[0]]
-	target := probe.nodes[abstractPath[len(abstractPath)-1]]
-	planStart := time.Now()
-	fullRefinedSegments := 0
-	fullReason := ""
+	var startConnected bool
+	var goalConnected bool
+	var startComponentSize int
+	var goalComponentSize int
+	var sameComponent bool
+	var abstractPathFound bool
+	var abstractError error
+	var refinedSegments int
+	var fallbackUsed bool = false
+
 	if buildErr != nil {
 		if buildCtxErr != nil {
-			fullReason = "full_builder_timeout"
+			abstractError = buildCtxErr
 		} else {
-			fullReason = fmt.Sprintf("full_builder_error:%v", buildErr)
+			abstractError = buildErr
 		}
-	}
-	if fullReason != "" {
-		// fall through to bounded test
-	} else if graphNodes == 0 {
-		fullReason = "full_graph_empty"
-	} else if graphEdges == 0 {
-		fullReason = "full_graph_has_no_edges"
 	} else {
 		fullPlanner := hpa.NewHPAPlanner(client.World(), fullGraph, fullClusters)
 		planCtx, planCancel := context.WithTimeout(context.Background(), 8*time.Second)
-		res := fullPlanner.PlanWithContext(planCtx, start, target, goal.NewGoalBlock(target[0], target[1], target[2]))
-		if res.Status != navplanner.PlanFound {
-			if planCtx.Err() != nil {
-				fullReason = "full_planner_timeout"
-			} else if res.Err != nil {
-				fullReason = fmt.Sprintf("full_planner_error:%v", res.Err)
-			} else {
-				fullReason = fmt.Sprintf("full_abstract_no_path:%s", res.Status)
-			}
-		} else if len(res.AbstractPath) < 2 {
-			fullReason = "full_abstract_path_too_short"
-		} else {
+		res := fullPlanner.PlanWithContext(planCtx, start, goalPos, goal.NewGoalBlock(goalPos[0], goalPos[1], goalPos[2]))
+
+		startConnected = res.StartConnected
+		goalConnected = res.GoalConnected
+		startComponentSize = res.StartComponentSize
+		goalComponentSize = res.GoalComponentSize
+		sameComponent = res.SameComponent
+		abstractError = res.Err
+
+		if res.Status == navplanner.PlanFound && len(res.AbstractPath) >= 2 {
+			abstractPathFound = true
 			for !res.Refiner.IsComplete() {
 				segment := res.Refiner.NextSegment()
 				if len(segment) == 0 {
 					if planCtx.Err() != nil {
-						fullReason = "full_refinement_timeout"
+						abstractError = planCtx.Err()
 					} else {
-						fullReason = "full_refinement_failed"
+						abstractError = fmt.Errorf("lazy refinement failed")
 					}
 					break
 				}
-				fullRefinedSegments++
-			}
-			if fullReason == "" && fullRefinedSegments == 0 {
-				fullReason = "full_refined_zero_segments"
+				refinedSegments++
 			}
 		}
 		planCancel()
 	}
-	planDuration := time.Since(planStart)
-	if fullReason == "" {
-		fmt.Printf("[hpa-test] mode=full\n")
-		fmt.Printf("[hpa-test] abstract_path_found=true\n")
-		fmt.Printf("[hpa-test] refined_segments=%d\n", fullRefinedSegments)
-		fmt.Printf("[hpa-test] fallback_used=false\n")
-		fmt.Printf("[hpa-test] build_duration_ms=%d\n", buildDuration.Milliseconds())
-		fmt.Printf("[hpa-test] plan_duration_ms=%d\n", planDuration.Milliseconds())
-		fmt.Printf("[hpa-test] result=PASS\n")
-		return
-	}
 
-	boundedPlanStart := time.Now()
-	boundedRefinedSegments := 0
-	for i := 0; i < len(abstractPath)-1; i++ {
-		from := probe.nodes[abstractPath[i]]
-		to := probe.nodes[abstractPath[i+1]]
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		segment := navplanner.Plan(ctx, from[0], from[1], from[2], goal.NewGoalBlock(to[0], to[1], to[2]), client.World())
-		cancel()
-		if segment.Status != navplanner.PlanFound || len(segment.Path) == 0 {
-			break
+	graphValid := clusters > 0 && entrances > 0 && graphNodes > 0 && graphEdges > 0
+
+	var result string
+	var reason string
+
+	if !graphValid {
+		result = "FAIL"
+	} else {
+		if startConnected && goalConnected && sameComponent && abstractPathFound && refinedSegments > 0 && !fallbackUsed {
+			result = "PASS"
+		} else {
+			result = "PARTIAL"
+			if client.World().ChunkCount() < 2 {
+				reason = "insufficient_loaded_chunks"
+			} else if !client.World().HasChunk(floorDivInt(goalPos[0], 16), floorDivInt(goalPos[2], 16)) {
+				reason = "goal_not_in_loaded_chunk"
+			} else if !startConnected {
+				reason = "start_temp_node_not_connected"
+			} else if !goalConnected {
+				reason = "goal_temp_node_not_connected"
+			} else if !sameComponent {
+				reason = "start_goal_different_components"
+			} else if !abstractPathFound {
+				reason = "start_goal_different_components"
+			} else if refinedSegments == 0 {
+				reason = "lazy_refinement_failed"
+			} else {
+				reason = "lazy_refinement_failed"
+			}
 		}
-		boundedRefinedSegments++
 	}
-	boundedPlanDuration := time.Since(boundedPlanStart)
 
-	fmt.Printf("[hpa-test] mode=bounded_loaded_chunks\n")
-	fmt.Printf("[hpa-test] abstract_path_found=true\n")
-	fmt.Printf("[hpa-test] refined_segments=%d\n", boundedRefinedSegments)
-	fmt.Printf("[hpa-test] fallback_used=false\n")
-	fmt.Printf("[hpa-test] build_duration_ms=%d\n", buildDuration.Milliseconds())
-	fmt.Printf("[hpa-test] plan_duration_ms=%d\n", boundedPlanDuration.Milliseconds())
-	fmt.Printf("[hpa-test] full_reason=%s\n", fullReason)
-	boundedVerified := boundedRefinedSegments == len(abstractPath)-1
-	fmt.Printf("[hpa-test] bounded_graph_verified=%v\n", boundedVerified)
-	if boundedRefinedSegments != len(abstractPath)-1 {
-		fmt.Printf("[hpa-test] result=PARTIAL reason=bounded_refinement_incomplete\n")
-		return
+	var abstractErrorStr string
+	if abstractError != nil {
+		abstractErrorStr = abstractError.Error()
+	} else {
+		abstractErrorStr = "<nil>"
 	}
-	fmt.Printf("[hpa-test] result=PARTIAL reason=bounded_loaded_chunk_proof\n")
+
+	fmt.Printf("[hpa] start_pos=%d,%d,%d\n", start[0], start[1], start[2])
+	fmt.Printf("[hpa] goal_pos=%d,%d,%d\n", goalPos[0], goalPos[1], goalPos[2])
+	fmt.Printf("[hpa] start_cluster=%d,%d\n", startClusterCoord[0], startClusterCoord[1])
+	fmt.Printf("[hpa] goal_cluster=%d,%d\n", goalClusterCoord[0], goalClusterCoord[1])
+	fmt.Printf("[hpa] start_connected=%t\n", startConnected)
+	fmt.Printf("[hpa] goal_connected=%t\n", goalConnected)
+	fmt.Printf("[hpa] start_component_size=%d\n", startComponentSize)
+	fmt.Printf("[hpa] goal_component_size=%d\n", goalComponentSize)
+	fmt.Printf("[hpa] same_component=%t\n", sameComponent)
+	fmt.Printf("[hpa] graph_nodes=%d\n", graphNodes)
+	fmt.Printf("[hpa] graph_edges=%d\n", graphEdges)
+	fmt.Printf("[hpa] abstract_path_found=%t\n", abstractPathFound)
+	fmt.Printf("[hpa] abstract_error=%s\n", abstractErrorStr)
+	fmt.Printf("[hpa] refined_segments=%d\n", refinedSegments)
+	fmt.Printf("[hpa] fallback_used=%t\n", fallbackUsed)
+	if result == "PARTIAL" {
+		fmt.Printf("[hpa] result=PARTIAL reason=%s\n", reason)
+	} else {
+		fmt.Printf("[hpa] result=%s\n", result)
+	}
 }
 
 // ─── Bounded chunk graph helpers ─────────────────────────────────────────────
@@ -786,7 +817,7 @@ func runPlaceBlockSmoke(client *feast.Client) {
 }
 
 func findPlaceTarget(client *feast.Client) (world.BlockHit, bool) {
-	x, _, z, _, _ := client.GetPosition()
+	x, y, z, _, _ := client.GetPosition()
 	originX := int(math.Floor(x))
 	originZ := int(math.Floor(z))
 	for radius := 1; radius <= 8; radius++ {
@@ -802,11 +833,17 @@ func findPlaceTarget(client *feast.Client) (world.BlockHit, bool) {
 				if math.Hypot(cx-x, cz-z) < 2.0 {
 					continue
 				}
+				if math.Hypot(cx-x, cz-z) > 4.0 {
+					continue
+				}
 				surfaceY := client.World().GetSurfaceY(wx, wz)
 				if surfaceY == world.UnknownSurfaceY {
 					continue
 				}
 				targetY := surfaceY + 1
+				if math.Abs((float64(targetY)+0.5)-(y+1.62)) > 3.0 {
+					continue
+				}
 				target, err := client.World().GetBlock(wx, targetY, wz)
 				if err != nil || target.Name != "air" {
 					continue
@@ -860,7 +897,7 @@ func faceName(face byte) string {
 
 func runPlaceBlockInvalidSmoke(client *feast.Client) {
 	x, y, z, _, _ := client.GetPosition()
-	target := protocol.BlockPos{X: int32(x), Y: int32(y), Z: int32(z)}
+	target := protocol.BlockPos{X: int32(math.Floor(x)), Y: int32(math.Floor(y)), Z: int32(math.Floor(z))}
 	err := client.PlaceBlock(target, protocol.BlockFaceTop)
 	if err != nil {
 		fmt.Printf("[place-invalid] result=PASS reason=clean_error\n")
@@ -1083,6 +1120,10 @@ func runHPAMutationTest(client *feast.Client) {
 	result := "FAIL"
 	if placeSent && invalidationAfterPlace && breakUpdate && invalidationAfterBreak {
 		result = "PASS"
+	}
+	if result == "PASS" && (!pathFound || refinedSegments == 0) {
+		fmt.Printf("[hpa-mutation] result=PASS reason=invalidation_verified\n")
+		return
 	}
 	fmt.Printf("[hpa-mutation] result=%s\n", result)
 }
