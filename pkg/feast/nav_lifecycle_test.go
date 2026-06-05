@@ -29,7 +29,7 @@ func TestNavigateTo_BlockUpdateHandlersUnsubscribed(t *testing.T) {
 	c.positionSynced = true
 	c.stateMu.Unlock()
 
-	_ = c.NavigateTo(2, 64, 1)
+	_ = c.NavigateTo2(2, 64, 1)
 	time.Sleep(250 * time.Millisecond)
 	c.StopNavigation()
 	time.Sleep(100 * time.Millisecond)
@@ -42,9 +42,9 @@ func TestNavigateTo_BlockUpdateHandlersUnsubscribed(t *testing.T) {
 func TestNavigateToRequiresPositionSync(t *testing.T) {
 	c := NewClient(Options{})
 
-	err := c.NavigateTo(2, 64, 1)
+	err := c.NavigateTo2(2, 64, 1)
 	if err == nil || err.Error() != "position not synced yet" {
-		t.Fatalf("NavigateTo error=%v want position not synced yet", err)
+		t.Fatalf("NavigateTo2 error=%v want position not synced yet", err)
 	}
 }
 

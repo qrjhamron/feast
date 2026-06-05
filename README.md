@@ -1,95 +1,300 @@
 # FeastGo
 
-FeastGo is a private Go bot framework and protocol implementation for Minecraft Java Edition 1.20.4, targeting Protocol 765. It features offline-mode login, FSM state management, chunk/world tracking, block lookup, local A*, and Hierarchical Pathfinding A* (HPA*) navigation.
+**FeastGo** is an offline-mode Minecraft Java Edition bot framework written in Go.
+It is designed as a clean, embeddable library – similar in spirit to Mineflayer or Azalea –
+exposing a high-level API on top of a tested, Protocol-765-compliant transport stack.
 
-## Crucial Protocol Constraints
+> ⚠️ **Offline-mode only.** FeastGo does **not** support Microsoft/Mojang authentication,
+> Yggdrasil, online-mode encryption, or the Minecraft encryption handshake.
+> It is for use with servers that have `online-mode=false`.
 
-*   **Offline-Mode Only:** FeastGo is strictly offline-mode.
-*   **Target version:** Minecraft Java Edition 1.20.4, Protocol 765.
-*   **Tested on:** Paper 1.20.4.
-*   **Vanilla 1.20.4 Status:** NOT_RUN (No vanilla jar was stood up, but paper is fully verified).
-*   **No Online-Mode Support:** Microsoft and Mojang/Yggdrasil authentication are not supported.
-*   **No Encryption Support:** AES/CFB8 packet encryption is intentionally unsupported. Connection attempts to online-mode servers are refused and disconnected cleanly with an explicit error.
-*   **No Access Tokens / Session Tokens:** Token-based authentication or session handling is not implemented.
+---
+
+## Supported Version
+
+| Property | Value |
+|---|---|
+| Minecraft | Java Edition **1.20.4** |
+| Protocol | **765** |
+| Tested server | **Paper 1.20.4** |
+| Vanilla | Not tested |
+| Multi-version | Not supported |
+
+---
+
+## Install
+
+```bash
+go get github.com/qrjhamron/feast/pkg/feast
+```
+
+---
+
+## Quick Start
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/qrjhamron/feast/pkg/feast"
+    "github.com/qrjhamron/feast/pkg/nav/goal"
+)
+
+func main() {
+    ctx := context.Background()
+
+    bot, err := feast.Connect(ctx, feast.Options{
+        Host:     "127.0.0.1",
+        Port:     "25565",
+        Username: "FeastGoBot",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer bot.Disconnect()
+
+    // Event hook registration.
+    bot.OnChat(func(e feast.ChatEvent) {
+        fmt.Printf("[chat] %s: %s\n", e.Sender, e.Message)
+    })
+
+    // Wait until position-synced and ready.
+    if err := bot.WaitUntilReady(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // Find nearest grass block and navigate to it.
+    hit, ok := bot.FindNearestBlock("grass_block", 64)
+    if ok {
+        g := goal.NewGoalBlock(hit.X, hit.Y+1, hit.Z)
+        _ = bot.NavigateTo(ctx, g)
+    }
+}
+```
+
+---
 
 ## Feature Matrix
 
-| Feature | Status | Notes |
-|---|---|---|
-| **Ping** | PASS | Handshake, Status request, and Ping request are fully implemented. |
-| **Offline login** | PASS | Custom name login start is supported; encryption request is parsed and rejected cleanly. |
-| **Config state** | PASS | Feature flags, registry data, tags, and finish configuration are synced. |
-| **Play state** | PASS | Chunk tracking, player state sync, position updates, entity spawns, and time updates are supported. |
-| **KeepAlive** | PASS | Client replies to server KeepAlives to stay connected. |
-| **Chat send** | PASS | Serverbound chat message packets are fully verified. |
-| **Chat receive** | PASS | System and player chat packets are parsed and displayed. |
-| **Chunk tracking** | PASS | 3D section palette decoding, light updates, and chunks unloading are supported. |
-| **Block lookup** | PASS | Fast block querying by coordinates from world state. |
-| **Find block** | PASS | BFS/nearest block lookup for target block types. |
-| **Block break** | PASS | Player action (digging start/finish) packets sent; waits for block update confirmation. |
-| **Block place creative smoke** | PASS | Placement of creative smoke items is fully functional, verified by block update. |
-| **Full inventory tracking** | PASS | Tracks all slots, hotbar, selection, empty slots, and counts. |
-| **Hotbar selection** | PASS | Supports SelectedHotbarSlot, HeldItem, SelectHotbarSlot, and FindHotbarItem APIs. |
-| **Survival place block** | Paper PASS | Places blocks from hotbar without creative injection; verifies block update and decrement. (Vanilla: NOT_RUN) |
-| **Entity tracking** | PASS | Tracks position changes, spawns, and removals of neighboring entities. |
-| **Entity metadata** | PASS | Decodes 1.20.4 entity metadata index values (including Pose) and updates store. |
-| **Entity hitbox** | PASS | Calculates AABB based on entity type and pose; queries collisions thread-safely. |
-| **Entity-aware pathfinding** | opt-in | A* pathfinder avoids blocking entities when `AvoidEntities=true`. |
-| **Local A\*** | PASS | 3D local A* pathfinder for short-range segment paths. |
-| **HPA\*** | PASS | 3D Hierarchical Pathfinding A* (HPA*) graph construction, cluster management, and path planning. |
-| **Navigation** | PASS | Movement execution with stuck detection, climbing, jumping, and falling. |
-| **Stuck detection** | PASS | Stuck position detection triggers replanning or clean failures. |
-| **Clean disconnect** | PASS | Sends disconnect packet and tears down all loops cleanly. |
-| **Command Graph** | NOT_IMPLEMENTED | Autocomplete commands list is skipped. |
-| **Online-mode auth** | NOT_SUPPORTED | Intentionally unsupported. |
+| Feature | Status |
+|---|---|
+| Offline login | ✅ |
+| Configuration + Play handshake | ✅ |
+| KeepAlive | ✅ |
+| Chunk / world tracking | ✅ |
+| Chat send / receive | ✅ |
+| Entity tracking (spawn, move, remove) | ✅ |
+| Entity metadata + hitboxes | ✅ |
+| Local A\* pathfinding | ✅ |
+| HPA\* pathfinding | ✅ |
+| Navigation (NavigateTo) | ✅ |
+| Block break | ✅ |
+| Creative block place | ✅ |
+| Survival block place | ✅ |
+| Survival inventory tracking | ✅ |
+| Entity-aware pathfinding | ✅ |
+| Clean disconnect | ✅ |
+| Online-mode auth | ❌ intentionally excluded |
+| Encryption | ❌ intentionally excluded |
+| Command Graph | ❌ not yet |
+| Multi-version | ❌ not planned |
 
-## Running Tests
+---
 
-To run the full suite of unit tests, run:
-```sh
+## Public API Overview
+
+```go
+// Connect creates and returns a connected Client.
+func Connect(ctx context.Context, opts Options) (*Client, error)
+
+// NewClient creates a Client without connecting.
+func NewClient(opts Options) *Client
+
+// Connection
+func (c *Client) Connect() error
+func (c *Client) Disconnect() error
+func (c *Client) WaitUntilReady(ctx context.Context) error
+
+// Chat
+func (c *Client) Chat(message string) error
+func (c *Client) SendChat(message string) error
+
+// State
+func (c *Client) Position() world.Vec3
+func (c *Client) Health() float32
+func (c *Client) Food() int32
+
+// World & entities
+func (c *Client) World() *world.World
+func (c *Client) Entities() *world.EntityStore
+func (c *Client) Inventory() *InventoryState
+
+// Block search
+func (c *Client) FindNearestBlock(name string, radius int) (world.BlockHit, bool)
+
+// Navigation
+func (c *Client) NavigateTo(ctx context.Context, g goal.Goal) error
+func (c *Client) StopNavigation()
+
+// Block interaction
+func (c *Client) BreakBlock(ctx context.Context, pos BlockPos) error
+func (c *Client) PlaceBlockCreative(ctx context.Context, target BlockPos, face Direction, blockName string) error
+func (c *Client) PlaceBlockSurvival(ctx context.Context, target BlockPos, face Direction) error
+
+// Inventory
+func (c *Client) SelectHotbarSlot(ctx context.Context, slot int) error
+func (c *Client) HeldItem() (ItemStack, bool)
+func (c *Client) FindHotbarItem(name string) (slot int, stack ItemStack, ok bool)
+
+// Event hooks
+func (c *Client) OnReady(fn func())
+func (c *Client) OnChat(fn func(ChatEvent))
+func (c *Client) OnHealth(fn func(HealthEvent))
+func (c *Client) OnPosition(fn func(PositionEvent))
+func (c *Client) OnBlockUpdate(fn func(BlockUpdateEvent))
+func (c *Client) OnEntitySpawn(fn func(EntityEvent))
+func (c *Client) OnEntityMove(fn func(EntityEvent))
+func (c *Client) OnEntityRemove(fn func(EntityEvent))
+func (c *Client) OnError(fn func(error))
+func (c *Client) OnDisconnect(fn func(error))
+
+// Low-level (escape hatch)
+func (c *Client) On(eventType string, handler func(state.Event)) (int, error)
+func (c *Client) Events() *state.EventBus
+func (c *Client) WritePacket(p protocol.Packet) error
+```
+
+---
+
+## Commands
+
+### `cmd/ping` – Server Status
+
+```bash
+go run ./cmd/ping <host> [port]
+```
+
+Queries the server's status packet (ping + MOTD) without logging in.
+
+### `cmd/bot` – Demo Bot
+
+```bash
+MC_HOST=127.0.0.1 MC_USERNAME=FeastGoBot go run ./cmd/bot
+```
+
+A minimal interactive bot that connects, prints events, reads chat from stdin,
+and shuts down cleanly on `Ctrl+C` or `!quit`.
+
+### `cmd/smoke` – Smoke/Integration Test CLI
+
+```bash
+go run ./cmd/smoke --smoke-world
+go run ./cmd/smoke --smoke-break-block
+go run ./cmd/smoke --hpa-test
+go run ./cmd/smoke --soak 30s
+```
+
+Connects to a live server and exercises one feature per run. Each mode prints
+structured `[tag] key=value` lines and ends with `result=PASS` / `result=FAIL`.
+
+Run all smoke modes at once:
+
+```bash
+bash ./test/smoke/scripts/run_paper_smoke.sh
+```
+
+Full flag list: `go run ./cmd/smoke --help`
+
+---
+
+## Examples
+
+| Example | What it shows |
+|---|---|
+| `examples/basic_join` | Connect, WaitUntilReady, status |
+| `examples/chat_echo` | OnChat, Chat, echo bot |
+| `examples/find_block` | FindNearestBlock |
+| `examples/navigate_to_block` | FindNearestBlock + NavigateTo |
+| `examples/break_block` | BreakBlock, OnBlockUpdate |
+| `examples/place_block_creative` | PlaceBlockCreative |
+| `examples/place_block_survival` | PlaceBlockSurvival |
+| `examples/entity_events` | OnEntitySpawn, OnEntityMove, OnEntityRemove |
+| `examples/avoid_entities` | Entities().Nearby() proximity scan |
+
+```bash
+MC_HOST=127.0.0.1 go run ./examples/basic_join
+```
+
+---
+
+## Testing
+
+### Unit tests (no server required)
+
+```bash
 go test ./...
 ```
 
-To run package tests with the Go race detector enabled:
-```sh
-go test -race ./pkg/world ./pkg/state ./pkg/conn ./pkg/feast ./pkg/nav/...
+### Race tests
+
+```bash
+go test -race ./pkg/world ./pkg/state ./pkg/conn ./pkg/feast
 ```
 
-To run a linter check:
-```sh
-go vet ./...
+### Integration tests (require a live server)
+
+```bash
+export MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot
+go test ./test/integration -tags=integration -v
 ```
 
-## Running Server Smoke Tests
+Without a server, integration tests skip cleanly.
 
-First, start a local Minecraft Java Edition 1.20.4 server (e.g. Paper) with `online-mode=false` in `server.properties` on port 25565.
+### Smoke scripts
 
-Then, execute any of the following integration commands:
+```bash
+bash ./test/smoke/scripts/run_paper_smoke.sh
+bash ./test/smoke/scripts/run_local_validation.sh  # no server needed
+```
 
-```sh
-# 1. Ping the server
-go run ./cmd/ping 127.0.0.1 25565
+---
 
-# 2. Join and track world chunks
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-world
+## Package Structure
 
-# 3. Join and find nearest grass_block
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --find-block grass_block
+```
+cmd/
+  bot/      simple demo bot
+  ping/     server status ping
+  smoke/    smoke / integration test CLI
 
-# 4. Run full HPA pathfinding tests
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --hpa-test
+pkg/
+  feast/    public client API  ← start here
+  world/    chunk, block, entity models
+  nav/      pathfinding (A*, HPA*, executor, goals, moves)
+  state/    FSM, event bus, packet dispatcher
+  conn/     framed transport, compression
+  protocol/ packet codecs, constants
 
-# 5. Place a block (creative smoke mode)
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-place-block
+internal/
+  smoke/    shared helpers for cmd/smoke
 
-# 6. Break a block
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-break-block
+test/
+  integration/   live-server integration tests (build tag: integration)
+  smoke/         smoke scripts and README
 
-# 7. Place and break block mutation sequence
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-world-mutate
+examples/   one example per feature
+```
 
-# 8. Run HPA rebuilds and planner queries after block changes
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --hpa-mutation-test
+---
 
-# 9. Run a stability soak test (e.g. 60 seconds)
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --soak 60s
+## Remaining Limitations
+
+- **Offline-mode only** – online-mode auth, encryption, and Microsoft/Mojang/Yggdrasil login are intentionally not supported.
+- **No Command Graph** – server command tab-completion is not implemented.
+- **No multi-version** – only Protocol 765 / Minecraft 1.20.4.
+- **Vanilla untested** – validated against Paper 1.20.4 only; vanilla may differ.
+- **No exploit/bypass logic** – FeastGo is a clean bot framework, not an exploit tool.

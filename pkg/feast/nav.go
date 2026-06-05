@@ -17,8 +17,9 @@ import (
 	"github.com/qrjhamron/feast/pkg/world"
 )
 
-// NavigateTo cancels any existing navigation and starts a new one to the given coordinates.
-func (c *Client) NavigateTo(x, y, z int) error {
+// NavigateTo2 cancels any existing navigation and starts a new one to the given coordinates.
+// It is the low-level coordinate version; prefer [Client.NavigateTo] for goal-based navigation.
+func (c *Client) NavigateTo2(x, y, z int) error {
 	c.stateMu.RLock()
 	positionSynced := c.positionSynced
 	c.stateMu.RUnlock()

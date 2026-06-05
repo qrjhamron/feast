@@ -272,8 +272,8 @@ func directionOffset(dir protocol.Direction) (dx, dy, dz int32) {
 	}
 }
 
-// PlaceBlockSurvival executes survival mode placement.
-func (c *Client) PlaceBlockSurvival(ctx context.Context, target protocol.BlockPos, face protocol.Direction) error {
+// PlaceBlockSurvivalInternal executes survival mode placement.
+func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol.BlockPos, face protocol.Direction) error {
 	c.inventoryMu.RLock()
 	selectedSlot := c.inventory.SelectedHotbarSlot
 	heldSlot := 36 + selectedSlot

@@ -41,7 +41,7 @@ func TestNavigateHandlersCountUnchangedAfterStop(t *testing.T) {
 	c.positionSynced = true
 	c.stateMu.Unlock()
 
-	if err := c.NavigateTo(10, 64, 0); err != nil {
+	if err := c.NavigateTo2(10, 64, 0); err != nil {
 		t.Fatalf("navigate: %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)

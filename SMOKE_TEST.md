@@ -1,6 +1,11 @@
 # FeastGo Integration & Smoke Testing
 
-This document describes how to execute and verify the complete integration and smoke tests against a local Minecraft server.
+This document describes how to execute and verify the complete integration and smoke tests
+against a local Minecraft server.
+
+> **Note**: Smoke test flags have moved from `cmd/bot` to `cmd/smoke`.
+> Use `go run ./cmd/smoke [flags]` for all smoke/integration testing.
+> The simple `cmd/bot` is now a minimal interactive demo only.
 
 ## Prerequisites
 
@@ -8,7 +13,13 @@ This document describes how to execute and verify the complete integration and s
 2.  **Configuration**: In `server.properties`, set `online-mode=false` and ensure `server-port=25565`. Start the server.
 3.  **Command Execution Location**: Run all commands from the repository root `/root/feastgo`.
 
-## Running the Verification Commands
+## Quick Run (all modes)
+
+```bash
+bash ./test/smoke/scripts/run_paper_smoke.sh
+```
+
+## Running Individual Smoke Modes
 
 ### 1. Pinger verification
 Verify that the server status ping is working:
@@ -24,10 +35,11 @@ Latency: 5ms
 ### 2. World and Chunk Tracking
 Join the server, verify configuration synchronization, play transition, chunk tracking, block palettes, surface Y checks, and chat send/receive:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-world
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --smoke-world
 ```
 **Expected Output**:
 ```
+
 [world] chunks_loaded=...
 [world] spawn_block={...}
 [world] passable_check=true
