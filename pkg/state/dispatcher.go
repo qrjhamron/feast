@@ -50,8 +50,9 @@ func (d *Dispatcher) dispatchLogin(p *protocol.RawPacket) error {
 			return err
 		}
 		d.bus.Emit(LoginEvent{UUID: uuidToString(pkt.UUID), RawUUID: pkt.UUID, Username: pkt.Username})
-	case consts.LoginClientboundEncryptionRequest,
-		consts.LoginClientboundSetCompression,
+	case consts.LoginClientboundEncryptionRequest:
+		return fmt.Errorf("online-mode encryption is intentionally unsupported")
+	case consts.LoginClientboundSetCompression,
 		consts.LoginClientboundLoginPluginRequest:
 		return nil
 	default:
@@ -112,13 +113,13 @@ func (d *Dispatcher) dispatchPlay(p *protocol.RawPacket) error {
 		if err := unmarshalRaw(pkt, p); err != nil {
 			return err
 		}
-		d.bus.Emit(ChatEvent{Sender: "system", Message: pkt.Message})
+		d.bus.Emit(ChatEvent{Sender: "system", Message: pkt.DisplayText()})
 	case consts.PlayClientboundPlayerChatMessage:
 		pkt := &protocol.PlayClientboundPlayerChatMessagePacket{}
 		if err := unmarshalRaw(pkt, p); err != nil {
 			return err
 		}
-		d.bus.Emit(ChatEvent{Sender: "player", Message: string(pkt.RawData)})
+		d.bus.Emit(ChatEvent{Sender: "player", Message: pkt.DisplayMessage()})
 	case consts.PlayClientboundClientboundKeepAlive:
 		pkt := &protocol.PlayClientboundKeepAlivePacket{}
 		if err := unmarshalRaw(pkt, p); err != nil {
@@ -138,6 +139,108 @@ func (d *Dispatcher) dispatchPlay(p *protocol.RawPacket) error {
 		if err := unmarshalRaw(pkt, p); err != nil {
 			return err
 		}
+		d.bus.Emit(ChunkLoadEvent{ChunkX: pkt.ChunkX, ChunkZ: pkt.ChunkZ})
+		return nil
+	case consts.PlayClientboundBlockUpdate:
+		pkt := &protocol.PlayClientboundBlockUpdatePacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(BlockUpdateEvent{
+			X:       pkt.Position.X,
+			Y:       pkt.Position.Y,
+			Z:       pkt.Position.Z,
+			StateID: pkt.StateID,
+		})
+		return nil
+	case consts.PlayClientboundUpdateSectionBlocks:
+		pkt := &protocol.PlayClientboundUpdateSectionBlocksPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		updates := make([]SectionBlockUpdate, 0, len(pkt.Changes))
+		baseX := pkt.SectionPos.X * 16
+		baseY := pkt.SectionPos.Y * 16
+		baseZ := pkt.SectionPos.Z * 16
+		for _, ch := range pkt.Changes {
+			x := int32((ch.LocalPos >> 8) & 0xF)
+			z := int32((ch.LocalPos >> 4) & 0xF)
+			y := int32(ch.LocalPos & 0xF)
+			updates = append(updates, SectionBlockUpdate{
+				X:       baseX + x,
+				Y:       baseY + y,
+				Z:       baseZ + z,
+				StateID: ch.StateID,
+			})
+		}
+		d.bus.Emit(SectionBlocksUpdateEvent{Updates: updates})
+		return nil
+	case consts.PlayClientboundUpdateEntityPositionAndRotation:
+		pkt := &protocol.PlayClientboundUpdateEntityPositionAndRotationPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(EntityMoveDeltaEvent{EntityID: pkt.EntityID, DX: pkt.DX, DY: pkt.DY, DZ: pkt.DZ})
+		d.bus.Emit(EntityRotateEvent{EntityID: pkt.EntityID, Yaw: pkt.Yaw, Pitch: pkt.Pitch, OnGround: pkt.OnGround})
+		return nil
+	case consts.PlayClientboundSpawnEntity:
+		pkt := &protocol.PlayClientboundSpawnEntityPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(EntitySpawnEvent{EntityID: pkt.EntityID, X: pkt.X, Y: pkt.Y, Z: pkt.Z, UUID: pkt.UUID, Type: pkt.Type})
+		return nil
+	case consts.PlayClientboundRemoveEntities:
+		pkt := &protocol.PlayClientboundRemoveEntitiesPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		for _, id := range pkt.EntityIDs {
+			d.bus.Emit(EntityRemoveEvent{EntityID: id})
+		}
+		return nil
+	case consts.PlayClientboundUpdateEntityPosition:
+		pkt := &protocol.PlayClientboundUpdateEntityPositionPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(EntityMoveDeltaEvent{EntityID: pkt.EntityID, DX: pkt.DX, DY: pkt.DY, DZ: pkt.DZ})
+		return nil
+
+	case consts.PlayClientboundUpdateEntityRotation:
+		pkt := &protocol.PlayClientboundUpdateEntityRotationPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(EntityRotateEvent{EntityID: pkt.EntityID, Yaw: pkt.Yaw, Pitch: pkt.Pitch, OnGround: pkt.OnGround})
+		return nil
+	case consts.PlayClientboundSetEntityVelocity:
+		pkt := &protocol.PlayClientboundSetEntityVelocityPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(EntityVelocityEvent{EntityID: pkt.EntityID, VelocityX: pkt.VelocityX, VelocityY: pkt.VelocityY, VelocityZ: pkt.VelocityZ})
+		return nil
+	case consts.PlayClientboundTeleportEntity:
+		pkt := &protocol.PlayClientboundTeleportEntityPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(EntityTeleportEvent{EntityID: pkt.EntityID, X: pkt.X, Y: pkt.Y, Z: pkt.Z, Yaw: pkt.Yaw, Pitch: pkt.Pitch, OnGround: pkt.OnGround})
+		return nil
+	case consts.PlayClientboundUpdateTime:
+		pkt := &protocol.PlayClientboundUpdateTimePacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(TimeUpdateEvent{WorldAge: pkt.WorldAge, TimeOfDay: pkt.TimeOfDay})
+		return nil
+	case consts.PlayClientboundPlayerInfoUpdate:
+		pkt := &protocol.PlayClientboundPlayerInfoUpdatePacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(PlayerInfoUpdateEvent{Actions: pkt.Actions, Players: pkt.Players})
 		return nil
 	case consts.PlayClientboundSetHealth:
 		pkt := &protocol.PlayClientboundSetHealthPacket{}
@@ -146,11 +249,33 @@ func (d *Dispatcher) dispatchPlay(p *protocol.RawPacket) error {
 		}
 		d.bus.Emit(HealthEvent{Health: pkt.Health, Food: pkt.Food, Saturation: pkt.Saturation})
 		return nil
+	case consts.PlayClientboundSetHeldItem:
+		pkt := &protocol.PlayClientboundSetHeldItemPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(HeldItemEvent{Slot: int(pkt.Slot)})
+		return nil
+	case consts.PlayClientboundSetContainerSlot:
+		pkt := &protocol.PlayClientboundSetContainerSlotPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(InventorySlotEvent{WindowID: pkt.WindowID, StateID: pkt.StateID, Slot: pkt.Slot, Item: pkt.Item})
+		return nil
 	case consts.PlayClientboundSetContainerContent:
 		pkt := &protocol.PlayClientboundSetContainerContentPacket{}
 		if err := unmarshalRaw(pkt, p); err != nil {
 			return err
 		}
+		d.bus.Emit(ContainerContentEvent{WindowID: pkt.WindowID, StateID: pkt.StateID, Slots: pkt.Slots})
+		return nil
+	case consts.PlayClientboundSetEntityMetadata:
+		pkt := &protocol.PlayClientboundSetEntityMetadataPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(EntityMetadataUpdateEvent{EntityID: pkt.EntityID, Metadata: pkt.Metadata})
 		return nil
 	}
 	return nil

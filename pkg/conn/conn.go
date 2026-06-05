@@ -3,9 +3,10 @@ package conn
 import (
 	"bufio"
 	"bytes"
-	"crypto/cipher"
+	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"github.com/user/feastgo/pkg/protocol"
 )
@@ -19,8 +20,6 @@ type Conn struct {
 	bw                   *bufio.Writer
 	pr                   *protocol.Reader
 	compressionThreshold int
-	encryptStream        cipher.Stream
-	decryptStream        cipher.Stream
 }
 
 // New creates a new protocol connection wrapper.
@@ -35,25 +34,14 @@ func (c *Conn) SetCompression(threshold int) {
 	c.compressionThreshold = threshold
 }
 
-// SetEncryption enables AES/CFB8 transport encryption on both directions.
-func (c *Conn) SetEncryption(key []byte) error {
-	enc, dec, err := NewCFB8(key)
-	if err != nil {
-		return err
-	}
-	c.encryptStream = enc
-	c.decryptStream = dec
-	c.reader = &cipherReader{r: c.raw, s: c.decryptStream}
-	c.writer = &cipherWriter{w: c.raw, s: c.encryptStream}
-	c.rebuildBuffers()
-	return nil
-}
-
 // ReadPacket reads one framed packet from the stream.
 func (c *Conn) ReadPacket() (*protocol.RawPacket, error) {
 	frameLen, err := c.pr.ReadVarInt()
 	if err != nil {
 		return nil, err
+	}
+	if frameLen < 0 || frameLen > protocol.MaxRawPacketLen {
+		return nil, fmt.Errorf("invalid packet frame length: %d", frameLen)
 	}
 
 	frame := make([]byte, frameLen)
@@ -117,6 +105,21 @@ func (c *Conn) Close() error {
 	return c.raw.Close()
 }
 
+// SetReadDeadline sets the read deadline on the underlying network connection.
+func (c *Conn) SetReadDeadline(t time.Time) error {
+	return c.raw.SetReadDeadline(t)
+}
+
+// SetWriteDeadline sets the write deadline on the underlying network connection.
+func (c *Conn) SetWriteDeadline(t time.Time) error {
+	return c.raw.SetWriteDeadline(t)
+}
+
+// SetDeadline sets the read and write deadlines on the underlying network connection.
+func (c *Conn) SetDeadline(t time.Time) error {
+	return c.raw.SetDeadline(t)
+}
+
 func (c *Conn) rebuildBuffers() {
 	c.br = bufio.NewReader(c.reader)
 	c.bw = bufio.NewWriter(c.writer)
@@ -126,29 +129,4 @@ func (c *Conn) rebuildBuffers() {
 func (c *Conn) prWriteVarInt(v int32) error {
 	pw := protocol.NewWriter(c.bw)
 	return pw.WriteVarInt(v)
-}
-
-type cipherReader struct {
-	r io.Reader
-	s cipher.Stream
-}
-
-func (r *cipherReader) Read(p []byte) (int, error) {
-	n, err := r.r.Read(p)
-	if n > 0 {
-		r.s.XORKeyStream(p[:n], p[:n])
-	}
-	return n, err
-}
-
-type cipherWriter struct {
-	w io.Writer
-	s cipher.Stream
-}
-
-func (w *cipherWriter) Write(p []byte) (int, error) {
-	buf := make([]byte, len(p))
-	copy(buf, p)
-	w.s.XORKeyStream(buf, buf)
-	return w.w.Write(buf)
 }

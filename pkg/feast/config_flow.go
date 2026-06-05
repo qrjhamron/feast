@@ -13,6 +13,20 @@ func (c *Client) runConfigFlow() error {
 		return err
 	}
 
+	// Send Client Information as required by Configuration state
+	if err := c.writePacket(&protocol.ConfigServerboundClientInformationPacket{
+		Locale:              "en_us",
+		ViewDistance:        10,
+		ChatMode:            0,
+		ChatColors:          true,
+		DisplayedSkinParts:  0x7f,
+		MainHand:            1,
+		EnableTextFiltering: false,
+		AllowServerListings: true,
+	}); err != nil {
+		return err
+	}
+
 	for {
 		raw, err := c.readPacket()
 		if err != nil {

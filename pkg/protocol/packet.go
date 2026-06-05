@@ -2,8 +2,11 @@ package protocol
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 )
+
+const MaxRawPacketLen = 2097152 // 2MB
 
 // RawPacket represents a framed packet with ID and raw body bytes.
 //
@@ -18,6 +21,9 @@ func ReadRawPacket(r io.Reader, compressionThreshold int) (*RawPacket, error) {
 	packetLength, _, err := ReadVarInt(r)
 	if err != nil {
 		return nil, err
+	}
+	if packetLength < 0 || packetLength > MaxRawPacketLen {
+		return nil, fmt.Errorf("invalid packet length: %d", packetLength)
 	}
 
 	packetData := make([]byte, packetLength)

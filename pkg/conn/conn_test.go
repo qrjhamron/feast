@@ -97,21 +97,3 @@ func TestCompressionThresholdBoundary(t *testing.T) {
 		}
 	}
 }
-
-func TestEncryptionRoundTrip(t *testing.T) {
-	key := []byte("0123456789abcdef")
-	enc, dec, err := NewCFB8(key)
-	if err != nil {
-		t.Fatalf("new cfb8: %v", err)
-	}
-
-	plain := []byte("minecraft-protocol-765")
-	cipherText := make([]byte, len(plain))
-	enc.XORKeyStream(cipherText, plain)
-	out := make([]byte, len(cipherText))
-	dec.XORKeyStream(out, cipherText)
-
-	if !bytes.Equal(out, plain) {
-		t.Fatalf("decrypt mismatch: got %x want %x", out, plain)
-	}
-}

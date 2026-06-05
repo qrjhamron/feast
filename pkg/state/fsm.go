@@ -1,6 +1,9 @@
 package state
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // State is a Minecraft connection state.
 type State int
@@ -14,10 +17,13 @@ const (
 	StateConfiguration
 	// StatePlay is the play protocol state.
 	StatePlay
+	// StateDisconnected is the disconnected state.
+	StateDisconnected
 )
 
 // FSM tracks connection state transitions.
 type FSM struct {
+	mu      sync.RWMutex
 	current State
 }
 
@@ -28,11 +34,15 @@ func NewFSM() *FSM {
 
 // Current returns the current state.
 func (f *FSM) Current() State {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	return f.current
 }
 
 // Transition moves to a target state when the transition is allowed.
 func (f *FSM) Transition(to State) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.current == to {
 		return nil
 	}
@@ -44,6 +54,9 @@ func (f *FSM) Transition(to State) error {
 }
 
 func isAllowedTransition(from, to State) bool {
+	if to == StateDisconnected {
+		return true
+	}
 	switch from {
 	case StateHandshaking:
 		return to == StateLogin
@@ -51,8 +64,6 @@ func isAllowedTransition(from, to State) bool {
 		return to == StateConfiguration
 	case StateConfiguration:
 		return to == StatePlay
-	case StatePlay:
-		return false
 	default:
 		return false
 	}

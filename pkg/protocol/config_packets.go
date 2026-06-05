@@ -264,18 +264,75 @@ func (p *ConfigClientboundUpdateTagsPacket) Unmarshal(r *Reader) error {
 }
 
 // ConfigServerboundClientInformationPacket is Client Information (configuration).
-type ConfigServerboundClientInformationPacket struct{ Data []byte }
+type ConfigServerboundClientInformationPacket struct {
+	Locale              string
+	ViewDistance        byte
+	ChatMode            int32
+	ChatColors          bool
+	DisplayedSkinParts  byte
+	MainHand            int32
+	EnableTextFiltering bool
+	AllowServerListings bool
+}
 
 func (p *ConfigServerboundClientInformationPacket) PacketID() int32 {
 	return consts.ConfigurationServerboundClientInformation
 }
 func (p *ConfigServerboundClientInformationPacket) Marshal(w *Writer) error {
-	_, err := w.w.Write(p.Data)
-	return err
+	if err := w.WriteString(p.Locale); err != nil {
+		return err
+	}
+	if err := w.WriteByte(p.ViewDistance); err != nil {
+		return err
+	}
+	if err := w.WriteVarInt(p.ChatMode); err != nil {
+		return err
+	}
+	if err := w.WriteBoolean(p.ChatColors); err != nil {
+		return err
+	}
+	if err := w.WriteByte(p.DisplayedSkinParts); err != nil {
+		return err
+	}
+	if err := w.WriteVarInt(p.MainHand); err != nil {
+		return err
+	}
+	if err := w.WriteBoolean(p.EnableTextFiltering); err != nil {
+		return err
+	}
+	return w.WriteBoolean(p.AllowServerListings)
 }
 func (p *ConfigServerboundClientInformationPacket) Unmarshal(r *Reader) error {
-	d, err := r.ReadRemainingBytes()
-	p.Data = d
+	var err error
+	p.Locale, err = r.ReadString()
+	if err != nil {
+		return err
+	}
+	p.ViewDistance, err = r.ReadByte()
+	if err != nil {
+		return err
+	}
+	p.ChatMode, err = r.ReadVarInt()
+	if err != nil {
+		return err
+	}
+	p.ChatColors, err = r.ReadBoolean()
+	if err != nil {
+		return err
+	}
+	p.DisplayedSkinParts, err = r.ReadByte()
+	if err != nil {
+		return err
+	}
+	p.MainHand, err = r.ReadVarInt()
+	if err != nil {
+		return err
+	}
+	p.EnableTextFiltering, err = r.ReadBoolean()
+	if err != nil {
+		return err
+	}
+	p.AllowServerListings, err = r.ReadBoolean()
 	return err
 }
 

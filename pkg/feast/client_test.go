@@ -2,8 +2,12 @@ package feast
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
+	"math"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +16,7 @@ import (
 	"github.com/user/feastgo/pkg/protocol"
 	"github.com/user/feastgo/pkg/protocol/consts"
 	"github.com/user/feastgo/pkg/state"
+	"github.com/user/feastgo/pkg/world"
 )
 
 func TestConnectMinimalLoginSequence(t *testing.T) {
@@ -58,6 +63,15 @@ func TestConnectMinimalLoginSequence(t *testing.T) {
 			return
 		} else if raw.ID != consts.LoginServerboundLoginAcknowledged {
 			errCh <- errUnexpectedID(raw.ID, consts.LoginServerboundLoginAcknowledged)
+			return
+		}
+
+		// Expect Client Information in Configuration state.
+		if raw, err := s.ReadPacket(); err != nil {
+			errCh <- err
+			return
+		} else if raw.ID != consts.ConfigurationServerboundClientInformation {
+			errCh <- errUnexpectedID(raw.ID, consts.ConfigurationServerboundClientInformation)
 			return
 		}
 
@@ -114,6 +128,99 @@ func TestDisconnectIsIdempotentBeforeConnect(t *testing.T) {
 	}
 }
 
+func TestDisconnectStopsPlayLoopsAndClosesSocketLast(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	var logsMu sync.Mutex
+	var logs []string
+	c := NewClient(Options{
+		Debug: true,
+		Logger: func(e LogEvent) {
+			logsMu.Lock()
+			defer logsMu.Unlock()
+			if e.Error != nil {
+				logs = append(logs, e.Message+" "+e.Error.Error())
+				return
+			}
+			logs = append(logs, e.Message)
+		},
+	})
+	c.conn = feastconn.New(clientConn)
+	c.stopCh = make(chan struct{})
+	c.runtimeCtx, c.runtimeCancel = context.WithCancel(context.Background())
+	if err := c.fsm.Transition(state.StateLogin); err != nil {
+		t.Fatalf("state login: %v", err)
+	}
+	if err := c.fsm.Transition(state.StateConfiguration); err != nil {
+		t.Fatalf("state config: %v", err)
+	}
+	if err := c.fsm.Transition(state.StatePlay); err != nil {
+		t.Fatalf("state play: %v", err)
+	}
+
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		buf := make([]byte, 512)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	c.startPlayLoops()
+	time.Sleep(75 * time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() { done <- c.Disconnect() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("disconnect: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("disconnect timed out")
+	}
+
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not observe socket close")
+	}
+
+	status := c.ShutdownStatus()
+	if !status.Requested || !status.TickLoopStopped || !status.ReadLoopStopped || !status.NavLoopStopped || !status.SocketClosed {
+		t.Fatalf("incomplete shutdown status: %+v", status)
+	}
+
+	logsMu.Lock()
+	defer logsMu.Unlock()
+	for _, line := range logs {
+		if strings.Contains(line, "packet write failed") || strings.Contains(line, "use of closed network connection") {
+			t.Fatalf("unexpected noisy shutdown log: %q", line)
+		}
+	}
+}
+
+func TestWriteAfterDisconnectReturnsErrClientClosed(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+
+	c := NewClient(Options{})
+	c.conn = feastconn.New(clientConn)
+	c.stopCh = make(chan struct{})
+	if err := c.Disconnect(); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+
+	err := c.WritePacket(&protocol.PlayServerboundKeepAlivePacket{KeepAliveID: 1})
+	if !errors.Is(err, ErrClientClosed) {
+		t.Fatalf("WritePacket after disconnect error=%v, want %v", err, ErrClientClosed)
+	}
+}
+
 func TestStatsDefaultsBeforeConnect(t *testing.T) {
 	c := NewClient(Options{})
 	stats := c.Stats()
@@ -132,13 +239,72 @@ func (e idError) Error() string { return "unexpected packet id" }
 func errUnexpectedID(got, want int32) error { return idError{got: got, want: want} }
 
 func TestHeartbeatPacketEncoding(t *testing.T) {
-	pkt := heartbeatPacket()
+	c := NewClient(Options{})
+	pkt := c.heartbeatPacket()
 	var b bytes.Buffer
 	if err := pkt.Marshal(protocol.NewWriter(&b)); err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	if len(b.Bytes()) == 0 {
 		t.Fatal("empty heartbeat payload")
+	}
+}
+
+func TestMovementAuthorityAcquireRelease(t *testing.T) {
+	c := NewClient(Options{})
+	if !c.AcquireMovement() {
+		t.Fatalf("expected first acquire to succeed")
+	}
+	if c.AcquireMovement() {
+		t.Fatalf("expected second acquire to fail while moving")
+	}
+	if !c.IsMoving() {
+		t.Fatalf("expected IsMoving=true while authority held")
+	}
+	c.ReleaseMovement()
+	if c.IsMoving() {
+		t.Fatalf("expected IsMoving=false after release")
+	}
+}
+
+func TestPositionEventMarksFirstSync(t *testing.T) {
+	c := NewClient(Options{})
+
+	c.bus.Emit(state.PositionEvent{X: 12.5, Y: 65, Z: -4.25, Yaw: 90, Pitch: 10, TeleportID: 7})
+
+	if !c.positionSynced {
+		t.Fatalf("expected positionSynced after position event")
+	}
+	st := c.PlayerState()
+	if st.X != 12.5 || st.Y != 65 || st.Z != -4.25 || st.Yaw != 90 || st.Pitch != 10 {
+		t.Fatalf("unexpected synced player state: %+v", st)
+	}
+}
+
+func TestHeartbeatPacketOnGroundUnknownChunkDefaultsTrue(t *testing.T) {
+	c := NewClient(Options{})
+	c.stateMu.Lock()
+	c.player.X, c.player.Y, c.player.Z = 100.5, 64, -20.5
+	c.stateMu.Unlock()
+	pkt := c.heartbeatPacket()
+	if !pkt.OnGround {
+		t.Fatalf("expected OnGround=true when feet chunk unknown")
+	}
+}
+
+func TestHeartbeatPacketOnGroundFromWorld(t *testing.T) {
+	c := NewClient(Options{})
+	chunkX := int(math.Floor(0.5 / float64(world.ChunkWidth)))
+	chunkZ := int(math.Floor(0.5 / float64(world.ChunkDepth)))
+	ch := world.NewChunk(chunkX, chunkZ)
+	ch.SetBlock(0, 63, 0, world.BlockState{Name: "minecraft:stone"})
+	c.world.AddChunk(ch)
+	c.stateMu.Lock()
+	c.player.X, c.player.Y, c.player.Z = 0.5, 64, 0.5
+	c.stateMu.Unlock()
+	pkt := c.heartbeatPacket()
+	if !pkt.OnGround {
+		t.Fatalf("expected OnGround=true with solid block below")
 	}
 }
 
@@ -169,6 +335,13 @@ func TestClientPlayLoopRepliesToKeepAliveAndTracksState(t *testing.T) {
 			errCh <- err
 			return
 		}
+
+		// Read Client Information
+		if _, err := s.ReadPacket(); err != nil {
+			errCh <- err
+			return
+		}
+
 		if err := s.WritePacket(&protocol.ConfigClientboundFinishPacket{}); err != nil {
 			errCh <- err
 			return
@@ -283,12 +456,13 @@ func TestReadLoopEOFEmitsErrorAndDisconnect(t *testing.T) {
 
 	go func() {
 		s := feastconn.New(serverConn)
-		_, _ = s.ReadPacket()
-		_, _ = s.ReadPacket()
+		_, _ = s.ReadPacket() // Handshake
+		_, _ = s.ReadPacket() // LoginStart
 		_ = s.WritePacket(&protocol.LoginClientboundLoginSuccessPacket{UUID: [16]byte{1}, Username: "FeastBot"})
-		_, _ = s.ReadPacket()
+		_, _ = s.ReadPacket() // LoginAck
+		_, _ = s.ReadPacket() // ClientInfo
 		_ = s.WritePacket(&protocol.ConfigClientboundFinishPacket{})
-		_, _ = s.ReadPacket()
+		_, _ = s.ReadPacket() // AckFinish
 		_ = serverConn.Close()
 	}()
 

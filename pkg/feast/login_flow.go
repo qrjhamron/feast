@@ -50,10 +50,9 @@ func (c *Client) runLoginFlow() error {
 			}
 			return nil
 		case consts.LoginClientboundEncryptionRequest:
-			// Online-mode encryption flow will be added later.
-			continue
+			return fmt.Errorf("online-mode encryption is intentionally unsupported")
 		case consts.LoginClientboundLoginPluginRequest:
-			// Plugin requests are not handled in this phase.
+			// NOTE: Plugin requests are not handled in the current version.
 			continue
 		default:
 			continue

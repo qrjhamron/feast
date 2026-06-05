@@ -35,3 +35,16 @@ vendor/
 *.test
 *.prof
 coverage.out
+
+# Added ignores
+*.log
+*.tmp
+*.out
+.DS_Store
+.idea/
+.vscode/
+bin/
+dist/
+tmp/
+.antigravitycli/
+server/

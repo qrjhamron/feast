@@ -6,6 +6,12 @@ import (
 	"io"
 )
 
+const (
+	MaxStringLen    int32 = 32767
+	MaxByteArrayLen int32 = 1 << 20
+	MaxBitSetWords  int32 = 4096
+)
+
 // Reader reads Minecraft protocol primitives from an underlying reader.
 type Reader struct {
 	r io.Reader
@@ -44,6 +50,9 @@ func (r *Reader) ReadString() (string, error) {
 	}
 	if l < 0 {
 		return "", fmt.Errorf("negative string length")
+	}
+	if l > MaxStringLen {
+		return "", fmt.Errorf("string length exceeds max: %d", l)
 	}
 	buf := make([]byte, l)
 	if _, err := io.ReadFull(r.r, buf); err != nil {
@@ -119,6 +128,9 @@ func (r *Reader) ReadByteArray() ([]byte, error) {
 	if l < 0 {
 		return nil, fmt.Errorf("negative byte array length")
 	}
+	if l > MaxByteArrayLen {
+		return nil, fmt.Errorf("byte array length exceeds max: %d", l)
+	}
 	buf := make([]byte, l)
 	_, err = io.ReadFull(r.r, buf)
 	return buf, err
@@ -133,6 +145,9 @@ func (r *Reader) ReadBitSet() ([]int64, error) {
 	if l < 0 {
 		return nil, fmt.Errorf("negative bitset length")
 	}
+	if l > MaxBitSetWords {
+		return nil, fmt.Errorf("bitset word length exceeds max: %d", l)
+	}
 	out := make([]int64, l)
 	for i := range out {
 		v, err := r.ReadLong()
@@ -144,9 +159,7 @@ func (r *Reader) ReadBitSet() ([]int64, error) {
 	return out, nil
 }
 
-// ReadNBT reads raw NBT bytes from the current field context.
-//
-// For packets where NBT is terminal, call ReadRemainingBytes before/after as needed.
+// ReadNBT reads raw NBT bytes until the end of the packet field.
 func (r *Reader) ReadNBT() ([]byte, error) {
 	return r.ReadRemainingBytes()
 }
