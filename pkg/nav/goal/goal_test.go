@@ -3,7 +3,7 @@ package goal
 import (
 	"testing"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func TestGoalXZ(t *testing.T) {

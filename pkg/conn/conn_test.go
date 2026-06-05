@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/user/feastgo/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol"
 )
 
 type testPacket struct {

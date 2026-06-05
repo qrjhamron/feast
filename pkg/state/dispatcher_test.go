@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/protocol/consts"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol/consts"
 )
 
 func marshalRaw(id int32, p protocol.Packet) *protocol.RawPacket {

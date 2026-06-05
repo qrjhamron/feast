@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/protocol/consts"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol/consts"
 )
 
 func mustRawPacket(t *testing.T, packetID int32, pkt protocol.Packet) *protocol.RawPacket {

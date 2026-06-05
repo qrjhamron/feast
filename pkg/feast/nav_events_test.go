@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	feastconn "github.com/user/feastgo/pkg/conn"
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/state"
+	feastconn "github.com/qrjhamron/feast/pkg/conn"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/state"
 )
 
 func TestNavEventingClient_EmitsNavStep(t *testing.T) {

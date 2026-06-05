@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/protocol/consts"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol/consts"
 )
 
 // Dispatcher decodes raw packets into typed events.

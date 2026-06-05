@@ -1,7 +1,7 @@
 package feast
 
 import (
-	"github.com/user/feastgo/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol"
 )
 
 // handshakePacket is Handshake (serverbound, handshaking).

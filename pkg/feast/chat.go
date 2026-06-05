@@ -5,8 +5,8 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/state"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/state"
 )
 
 // SendChat sends one chat message in play state.

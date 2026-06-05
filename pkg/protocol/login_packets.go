@@ -1,6 +1,6 @@
 package protocol
 
-import "github.com/user/feastgo/pkg/protocol/consts"
+import "github.com/qrjhamron/feast/pkg/protocol/consts"
 
 // LoginProperty represents one profile property entry in Login Success.
 type LoginProperty struct {

@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	feastconn "github.com/user/feastgo/pkg/conn"
-	"github.com/user/feastgo/pkg/nav/hpa"
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/state"
-	"github.com/user/feastgo/pkg/world"
+	feastconn "github.com/qrjhamron/feast/pkg/conn"
+	"github.com/qrjhamron/feast/pkg/nav/hpa"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/state"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 const protocolVersion765 int32 = 765

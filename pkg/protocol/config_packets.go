@@ -1,6 +1,6 @@
 package protocol
 
-import "github.com/user/feastgo/pkg/protocol/consts"
+import "github.com/qrjhamron/feast/pkg/protocol/consts"
 
 // ConfigClientboundPluginMessagePacket is Clientbound Plugin Message (configuration).
 type ConfigClientboundPluginMessagePacket struct {

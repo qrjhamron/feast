@@ -3,7 +3,7 @@ package goal
 import (
 	"math"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 // Goal defines the interface for pathfinding goals.

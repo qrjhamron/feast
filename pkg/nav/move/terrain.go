@@ -3,7 +3,7 @@ package move
 import (
 	"strings"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 // terrainMultiplier returns a multiplicative movement-cost factor based on the

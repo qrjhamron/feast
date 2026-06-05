@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func TestGraphBuilder(t *testing.T) {

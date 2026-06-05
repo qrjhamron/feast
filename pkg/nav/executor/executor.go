@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/feastgo/pkg/nav/goal"
-	"github.com/user/feastgo/pkg/nav/move"
-	"github.com/user/feastgo/pkg/nav/planner"
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/nav/goal"
+	"github.com/qrjhamron/feast/pkg/nav/move"
+	"github.com/qrjhamron/feast/pkg/nav/planner"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 type Client interface {

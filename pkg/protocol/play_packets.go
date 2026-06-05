@@ -9,7 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/user/feastgo/pkg/protocol/consts"
+	"github.com/qrjhamron/feast/pkg/protocol/consts"
 )
 
 // PlayClientboundLoginPacket is Login (play) (0x29).

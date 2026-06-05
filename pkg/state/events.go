@@ -1,6 +1,6 @@
 package state
 
-import "github.com/user/feastgo/pkg/protocol"
+import "github.com/qrjhamron/feast/pkg/protocol"
 
 // Event is the common interface for all state events.
 type Event interface {

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/user/feastgo/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol"
 )
 
 // Compress encodes packet data with Minecraft post-compression format.

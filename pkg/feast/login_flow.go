@@ -5,8 +5,8 @@ import (
 	"crypto/md5"
 	"fmt"
 
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/protocol/consts"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol/consts"
 )
 
 func (c *Client) runLoginFlow() error {

@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func newTestWorld() (*world.World, *world.Chunk) {

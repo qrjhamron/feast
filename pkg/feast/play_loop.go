@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/protocol/consts"
-	"github.com/user/feastgo/pkg/state"
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol/consts"
+	"github.com/qrjhamron/feast/pkg/state"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func (c *Client) startPlayLoops() {

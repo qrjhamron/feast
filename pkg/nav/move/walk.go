@@ -3,7 +3,7 @@ package move
 import (
 	"math"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 // MoveWalk moves one block horizontally (cardinal directions) without changing Y.

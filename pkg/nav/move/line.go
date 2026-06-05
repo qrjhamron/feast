@@ -3,7 +3,7 @@ package move
 import (
 	"math"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 // MoveWalkLine moves multiple blocks in a straight cardinal line on the XZ

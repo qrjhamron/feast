@@ -3,7 +3,7 @@ package move
 import (
 	"math"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 // MoveParkour jumps a 1-block gap by moving forward two blocks on the same Y.

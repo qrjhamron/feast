@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/user/feastgo/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol"
 )
 
 // Conn is a Minecraft protocol transport connection.

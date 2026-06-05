@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/feastgo/pkg/nav/move"
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/nav/move"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 type mockGoal struct {

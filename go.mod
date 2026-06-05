@@ -1,3 +1,3 @@
-module github.com/user/feastgo
+module github.com/qrjhamron/feast
 
 go 1.22.2

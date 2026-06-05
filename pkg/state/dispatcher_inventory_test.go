@@ -3,8 +3,8 @@ package state
 import (
 	"testing"
 
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/protocol/consts"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/protocol/consts"
 )
 
 func TestDispatcherSetHeldItemEmitsInventoryEvent(t *testing.T) {

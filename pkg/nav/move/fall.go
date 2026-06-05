@@ -3,7 +3,7 @@ package move
 import (
 	"math"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 // MoveFall moves horizontally by (Dx,Dz) while dropping Dy blocks (negative).

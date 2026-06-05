@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	feastconn "github.com/user/feastgo/pkg/conn"
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/state"
-	"github.com/user/feastgo/pkg/world"
+	feastconn "github.com/qrjhamron/feast/pkg/conn"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/state"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func TestApplyGravityTickFallsAndCapsVelocity(t *testing.T) {

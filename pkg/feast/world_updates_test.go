@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/state"
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/state"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func TestClientAppliesBlockUpdateEventsToWorld(t *testing.T) {

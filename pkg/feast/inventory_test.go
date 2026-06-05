@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	feastconn "github.com/user/feastgo/pkg/conn"
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/state"
-	"github.com/user/feastgo/pkg/world"
+	feastconn "github.com/qrjhamron/feast/pkg/conn"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/state"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func TestDefaultEmptyInventory(t *testing.T) {
@@ -213,9 +213,11 @@ func TestPlaceBlockSurvivalSuccessAndFailure(t *testing.T) {
 		ch := world.NewChunk(0, 0)
 		c.world.AddChunk(ch)
 
-		// Set target (10, 64, 10) to air, and support (10, 63, 10) to solid stone
-		c.world.SetBlock(10, 63, 10, 1) // stone
-		c.world.SetBlock(10, 64, 10, 0) // air
+		// Target (10, 64, 10) must start as air so PlaceBlockSurvival's
+		// pre-placement air-check passes; the goroutine below simulates the
+		// server confirming placement by updating the block afterwards.
+		c.world.SetBlock(10, 63, 10, 1) // support block: solid stone
+		c.world.SetBlock(10, 64, 10, 0) // target block: air (placement target)
 
 		// Mock player coordinates so it doesn't overlap target (10, 64, 10)
 		c.stateMu.Lock()
@@ -246,8 +248,11 @@ func TestPlaceBlockSurvivalSuccessAndFailure(t *testing.T) {
 		}()
 
 		go func() {
-			// Wait a bit, then set target block in world and emit event
-			// (Simulating the server responding with a block update)
+			// Delay ensures PlaceBlockSurvival's upfront air-check completes
+			// before the goroutine sets the block to stone.  Without this
+			// delay the goroutine races with the check and can cause it to
+			// see stone instead of air, failing the test non-deterministically.
+			time.Sleep(100 * time.Millisecond)
 			c.world.SetBlock(10, 64, 10, 1)
 			c.bus.Emit(state.BlockUpdateEvent{X: 10, Y: 64, Z: 10, StateID: 1})
 		}()

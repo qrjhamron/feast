@@ -1,6 +1,6 @@
 package move
 
-import "github.com/user/feastgo/pkg/world"
+import "github.com/qrjhamron/feast/pkg/world"
 
 type Movement interface {
 	Cost(w *world.World, from [3]int) float64

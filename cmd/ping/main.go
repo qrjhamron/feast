@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	feastconn "github.com/user/feastgo/pkg/conn"
-	"github.com/user/feastgo/pkg/protocol"
+	feastconn "github.com/qrjhamron/feast/pkg/conn"
+	"github.com/qrjhamron/feast/pkg/protocol"
 )
 
 type handshakePacket struct {

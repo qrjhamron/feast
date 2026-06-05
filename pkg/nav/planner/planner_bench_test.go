@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/user/feastgo/pkg/nav/goal"
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/nav/goal"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func buildOpenWorldForBench(length int) *world.World {

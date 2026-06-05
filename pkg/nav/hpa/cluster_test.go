@@ -3,7 +3,7 @@ package hpa
 import (
 	"testing"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func TestClusterManager(t *testing.T) {

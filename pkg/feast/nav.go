@@ -8,13 +8,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/user/feastgo/pkg/nav/executor"
-	"github.com/user/feastgo/pkg/nav/goal"
-	"github.com/user/feastgo/pkg/nav/move"
-	"github.com/user/feastgo/pkg/nav/planner"
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/state"
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/nav/executor"
+	"github.com/qrjhamron/feast/pkg/nav/goal"
+	"github.com/qrjhamron/feast/pkg/nav/move"
+	"github.com/qrjhamron/feast/pkg/nav/planner"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/state"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 // NavigateTo cancels any existing navigation and starts a new one to the given coordinates.

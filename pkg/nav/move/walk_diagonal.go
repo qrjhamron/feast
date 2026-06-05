@@ -3,7 +3,7 @@ package move
 import (
 	"math"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 // MoveWalkDiagonal moves one block diagonally on the XZ plane (no Y change).

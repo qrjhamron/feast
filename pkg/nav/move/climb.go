@@ -4,7 +4,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 // MoveClimb moves one block upward while staying in the same XZ column.

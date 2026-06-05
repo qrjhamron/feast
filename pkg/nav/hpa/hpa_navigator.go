@@ -6,10 +6,10 @@ import (
 	"log"
 	"math"
 
-	"github.com/user/feastgo/pkg/nav/executor"
-	"github.com/user/feastgo/pkg/nav/goal"
-	"github.com/user/feastgo/pkg/nav/planner"
-	"github.com/user/feastgo/pkg/world"
+	"github.com/qrjhamron/feast/pkg/nav/executor"
+	"github.com/qrjhamron/feast/pkg/nav/goal"
+	"github.com/qrjhamron/feast/pkg/nav/planner"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 type HPANavigator struct {

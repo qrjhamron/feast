@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	feastconn "github.com/user/feastgo/pkg/conn"
-	"github.com/user/feastgo/pkg/state"
+	feastconn "github.com/qrjhamron/feast/pkg/conn"
+	"github.com/qrjhamron/feast/pkg/state"
 )
 
 func TestDisconnectWhileTickLoopActive(t *testing.T) {

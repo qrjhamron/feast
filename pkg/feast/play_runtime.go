@@ -1,8 +1,8 @@
 package feast
 
 import (
-	"github.com/user/feastgo/pkg/protocol"
-	"github.com/user/feastgo/pkg/state"
+	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/state"
 )
 
 func applyGravityTick(st PlayerState, belowPassable bool) PlayerState {
