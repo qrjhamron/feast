@@ -24,6 +24,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/qrjhamron/feast/pkg/nav/goal"
@@ -265,6 +267,7 @@ func (c *Client) navigateTo(x, y, z int) error {
 
 type BreakOptions struct {
 	AutoTool bool
+	Creative bool
 }
 
 // BreakBlock sends start+finish digging packets for the block at pos.
@@ -274,9 +277,13 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 		ctx = context.Background()
 	}
 	var autoTool bool
+	var creative bool
 	for _, opt := range opts {
 		if opt.AutoTool {
 			autoTool = true
+		}
+		if opt.Creative {
+			creative = true
 		}
 	}
 
@@ -286,10 +293,15 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 	if err := c.world.RequireBlockLoaded(world.BlockPos(pos)); err != nil {
 		return err
 	}
+
 	bx, by, bz, _, _ := c.GetPosition()
-	if c.blockCenterDistance(pos) > 6.0 {
-		return fmt.Errorf("%w (distance %.2f)", ErrBreakOutOfReach, c.blockCenterDistance(pos))
-	}
+	eyeX, eyeY, eyeZ := bx, by+1.62, bz
+	tcX, tcY, tcZ := float64(pos.X)+0.5, float64(pos.Y)+0.5, float64(pos.Z)+0.5
+	dx := tcX - eyeX
+	dy := tcY - eyeY
+	dz := tcZ - eyeZ
+	distance := math.Sqrt(dx*dx + dy*dy + dz*dz)
+	withinReach := distance <= 4.5
 
 	if pos.X == int32(math.Floor(bx)) && pos.Z == int32(math.Floor(bz)) && pos.Y == int32(math.Floor(by))-1 {
 		return ErrBreakTargetUnsafe
@@ -310,13 +322,16 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 	fmt.Printf("[break] auto_tool=%v\n", autoTool)
 	fmt.Printf("[break] target_block=%s\n", blockName)
 
+	selectedToolName := "none"
+	selectedSlot := -1
+
+	c.inventoryMu.RLock()
+	currentSlot := c.inventory.SelectedHotbarSlot
+	c.inventoryMu.RUnlock()
+
 	if autoTool {
 		preferredKind := registry.PreferredToolForBlock(blockName)
-		selectedToolName := "none"
-		selectedSlot := -1
-
 		c.inventoryMu.RLock()
-		currentSlot := c.inventory.SelectedHotbarSlot
 		if preferredKind != registry.ToolNone {
 			for i := 0; i < 9; i++ {
 				invSlot := 36 + i
@@ -349,11 +364,32 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 			fmt.Printf("[break] selected_tool=%s\n", selectedToolName)
 			fmt.Printf("[break] selected_slot=%d\n", currentSlot)
 		}
+	} else {
+		heldItem, hasHeld := c.HeldItem()
+		if hasHeld {
+			selectedToolName = heldItem.Name
+		}
 	}
 
-	// Subscribe to block update event before writing packets to prevent race conditions
+	var delay time.Duration
+	if !creative {
+		delay = c.estimateBreakDelay(blockName, selectedToolName)
+	}
+
+	fmt.Printf("[break-debug] pos=%.2f,%.2f,%.2f\n", bx, by, bz)
+	fmt.Printf("[break-debug] eye=%.2f,%.2f,%.2f\n", eyeX, eyeY, eyeZ)
+	fmt.Printf("[break-debug] target_center=%.2f,%.2f,%.2f\n", tcX, tcY, tcZ)
+	fmt.Printf("[break-debug] distance=%.2f\n", distance)
+	fmt.Printf("[break-debug] within_reach=%v\n", withinReach)
+	fmt.Printf("[break-debug] selected_tool=%s\n", selectedToolName)
+	fmt.Printf("[break-debug] estimated_break_delay=%s\n", delay)
+
+	if !withinReach {
+		return fmt.Errorf("%w (distance %.2f)", ErrBreakOutOfReach, distance)
+	}
+
 	ch := make(chan struct{}, 1)
-	handlerID, _ := c.bus.On("block_update", func(e state.Event) {
+	blockHandlerID, _ := c.bus.On("block_update", func(e state.Event) {
 		if ev, ok := e.(state.BlockUpdateEvent); ok {
 			if int(ev.X) == int(pos.X) && int(ev.Y) == int(pos.Y) && int(ev.Z) == int(pos.Z) {
 				select {
@@ -363,43 +399,150 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 			}
 		}
 	})
-	defer c.bus.Off(handlerID)
+	defer c.bus.Off(blockHandlerID)
+
+	sectionHandlerID, _ := c.bus.On("section_blocks_update", func(e state.Event) {
+		if ev, ok := e.(state.SectionBlocksUpdateEvent); ok {
+			for _, u := range ev.Updates {
+				if int(u.X) == int(pos.X) && int(u.Y) == int(pos.Y) && int(u.Z) == int(pos.Z) {
+					select {
+					case ch <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}
+	})
+	defer c.bus.Off(sectionHandlerID)
+
+	face := c.determineDigFace(world.Vec3{X: bx, Y: by, Z: bz}, pos)
+	seq := int32(atomic.AddInt32(&placementSequence, 1))
+	fmt.Printf("[break] sequence_id=%d\n", seq)
 
 	start := &protocol.PlayServerboundPlayerActionPacket{
 		Status:   protocol.PlayerActionStartDigging,
 		Position: pos,
-		Face:     protocol.BlockFaceTop,
-		Sequence: 1,
+		Face:     face,
+		Sequence: seq,
 	}
 	if err := c.WritePacket(start); err != nil {
+		fmt.Printf("[break-debug] start_sent=false\n")
 		return fmt.Errorf("break block start: %w", err)
 	}
+	fmt.Printf("[break-debug] start_sent=true\n")
+
+	if !creative && delay > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+
 	finish := &protocol.PlayServerboundPlayerActionPacket{
 		Status:   protocol.PlayerActionFinishDigging,
 		Position: pos,
-		Face:     protocol.BlockFaceTop,
-		Sequence: 2,
+		Face:     face,
+		Sequence: seq,
 	}
 	if err := c.WritePacket(finish); err != nil {
+		fmt.Printf("[break-debug] finish_sent=false\n")
 		return fmt.Errorf("break block finish: %w", err)
 	}
+	fmt.Printf("[break-debug] finish_sent=true\n")
+
+	var finalStateName string = "unknown"
 
 	select {
 	case <-ctx.Done():
+		fmt.Printf("[break-debug] update_seen=false\n")
+		fmt.Printf("[break-debug] final_state=unknown\n")
 		return ctx.Err()
 	case <-ch:
 		newState, err := c.world.GetBlock(int(pos.X), int(pos.Y), int(pos.Z))
 		if err != nil {
+			fmt.Printf("[break-debug] update_seen=true\n")
+			fmt.Printf("[break-debug] final_state=unknown\n")
 			return err
 		}
+		finalStateName = newState.Name
+		fmt.Printf("[break-debug] update_seen=true\n")
+		fmt.Printf("[break-debug] final_state=%s\n", finalStateName)
+
 		if !c.world.IsReplaceable(world.BlockPos(pos)) || newState.Name == blockName {
+			fmt.Printf("[break] rollback detected: expected air/replaceable, got %s\n", newState.Name)
 			return ErrBreakRolledBack
 		}
 		fmt.Printf("[break] result=PASS\n")
 		return nil
-	case <-time.After(3 * time.Second):
+	case <-time.After(4 * time.Second):
+		fmt.Printf("[break-debug] update_seen=false\n")
+		fmt.Printf("[break-debug] final_state=unknown\n")
 		return ErrBlockUpdateTimeout
 	}
+}
+
+func (c *Client) determineDigFace(botPos world.Vec3, target BlockPos) byte {
+	dx := float64(target.X) + 0.5 - botPos.X
+	dy := float64(target.Y) + 0.5 - (botPos.Y + 1.62)
+	dz := float64(target.Z) + 0.5 - botPos.Z
+
+	if dy < -1.0 {
+		return 1 // BlockFaceTop
+	}
+	if dy > 1.0 {
+		return 0 // BlockFaceBottom
+	}
+	if math.Abs(dx) > math.Abs(dz) {
+		if dx > 0 {
+			return 4 // BlockFaceWest
+		}
+		return 5 // BlockFaceEast
+	} else {
+		if dz > 0 {
+			return 2 // BlockFaceNorth
+		}
+		return 3 // BlockFaceSouth
+	}
+}
+
+func (c *Client) estimateBreakDelay(blockName, toolName string) time.Duration {
+	blockName = strings.TrimSpace(strings.ToLower(blockName))
+	blockName = strings.TrimPrefix(blockName, "minecraft:")
+
+	toolName = strings.TrimSpace(strings.ToLower(toolName))
+	toolName = strings.TrimPrefix(toolName, "minecraft:")
+
+	if blockName == "air" || blockName == "cave_air" || blockName == "void_air" {
+		return 0
+	}
+
+	isSoft := strings.Contains(blockName, "dirt") || strings.Contains(blockName, "grass") ||
+		strings.Contains(blockName, "sand") || strings.Contains(blockName, "gravel") ||
+		strings.Contains(blockName, "clay") || strings.Contains(blockName, "snow")
+	isStone := strings.Contains(blockName, "stone") || strings.Contains(blockName, "cobblestone") ||
+		strings.Contains(blockName, "deepslate") || strings.Contains(blockName, "ore") ||
+		strings.Contains(blockName, "obsidian") || strings.Contains(blockName, "andesite") ||
+		strings.Contains(blockName, "diorite") || strings.Contains(blockName, "granite")
+
+	isShovel := strings.Contains(toolName, "shovel")
+	isPickaxe := strings.Contains(toolName, "pickaxe")
+
+	if isSoft {
+		if isShovel {
+			return 200 * time.Millisecond
+		}
+		return 900 * time.Millisecond
+	}
+
+	if isStone {
+		if isPickaxe {
+			return 800 * time.Millisecond
+		}
+		return 7500 * time.Millisecond
+	}
+
+	return 500 * time.Millisecond
 }
 
 // PlaceBlockCreative places a block in creative mode at target using the given

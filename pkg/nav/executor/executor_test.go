@@ -120,6 +120,74 @@ func TestExecuteWithResultClassifiesNoPathAndTimeout(t *testing.T) {
 	}
 }
 
+func TestExecute_TracksPacketDiagnostics(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	client := &statsClient{mockClient: mockClient{x: 0.5, y: 10, z: 0.5}}
+	w := world.NewWorld()
+	ch := world.NewChunk(0, 0)
+	for x := 0; x <= 2; x++ {
+		ch.SetBlock(x, 9, 0, world.BlockState{Name: "minecraft:stone"})
+	}
+	w.AddChunk(ch)
+
+	err := Execute(ctx, client, w, mockGoal{satisfied: false}, []move.Movement{move.MoveWalk{Dx: 1, Dz: 0}})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	stats := client.stats
+	if !stats.HasFirstTargetNode || stats.FirstTargetNodeX != 1 || stats.FirstTargetNodeY != 10 || stats.FirstTargetNodeZ != 0 {
+		t.Fatalf("first target node not tracked: %+v", stats)
+	}
+	if !stats.HasFirstPacketPos {
+		t.Fatalf("first packet position not tracked: %+v", stats)
+	}
+	if stats.FirstPacketX == stats.LastPacketX && stats.FirstPacketZ == stats.LastPacketZ {
+		t.Fatalf("expected changing packet positions, got first=(%.3f,%.3f) last=(%.3f,%.3f)", stats.FirstPacketX, stats.FirstPacketZ, stats.LastPacketX, stats.LastPacketZ)
+	}
+	if stats.DistanceTraveled <= 0 {
+		t.Fatalf("expected distance traveled > 0, got %+v", stats)
+	}
+}
+
+func TestExecute_AvoidsCornerClipFromOffCenterStart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	client := &statsClient{mockClient: mockClient{x: 1.145, y: 10, z: 1.5}}
+	w := world.NewWorld()
+	ch := world.NewChunk(0, 0)
+	for x := 0; x <= 2; x++ {
+		for z := 0; z <= 2; z++ {
+			ch.SetBlock(x, 9, z, world.BlockState{Name: "minecraft:grass_block"})
+			ch.SetBlock(x, 10, z, world.BlockState{Name: "air"})
+			ch.SetBlock(x, 11, z, world.BlockState{Name: "air"})
+		}
+	}
+	ch.SetBlock(0, 10, 0, world.BlockState{Name: "minecraft:stone"})
+	w.AddChunk(ch)
+
+	err := Execute(ctx, client, w, mockGoal{satisfied: false}, []move.Movement{move.MoveWalk{Dx: 0, Dz: -1}})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for _, p := range client.packets {
+		pp, ok := p.(*protocol.PlayServerboundSetPlayerPositionAndRotationPacket)
+		if !ok {
+			continue
+		}
+		if pp.Z != 1.5 {
+			t.Fatalf("first position packet should avoid clipping by moving on x-axis first, got x=%.3f z=%.3f", pp.X, pp.Z)
+		}
+		return
+	}
+	t.Fatal("expected a position packet")
+}
+
 func TestExecute_OneMove(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

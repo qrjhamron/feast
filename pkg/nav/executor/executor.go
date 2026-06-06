@@ -31,8 +31,31 @@ type MovementStats struct {
 	PacketsSent         int
 	ServerPositionsSeen int
 	CorrectionsSeen     int
+	TeleportsSeen       int
 	Reached             bool
+	StartX              float64
+	StartY              float64
+	StartZ              float64
+	FinalX              float64
+	FinalY              float64
+	FinalZ              float64
+	DistanceTraveled    float64
 	FinalDistance       float64
+	HasFirstTargetNode  bool
+	FirstTargetNodeX    int
+	FirstTargetNodeY    int
+	FirstTargetNodeZ    int
+	HasFirstPacketPos   bool
+	FirstPacketX        float64
+	FirstPacketY        float64
+	FirstPacketZ        float64
+	LastPacketX         float64
+	LastPacketY         float64
+	LastPacketZ         float64
+	LastCorrectionX     float64
+	LastCorrectionY     float64
+	LastCorrectionZ     float64
+	StuckReason         string
 }
 
 type MoveErrorReason string
@@ -191,8 +214,16 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 	}
 
 	var stats MovementStats
+	startX, startY, startZ, _, _ := client.GetPosition()
+	stats.StartX = startX
+	stats.StartY = startY
+	stats.StartZ = startZ
 	defer func() {
 		cx, cy, cz, _, _ := client.GetPosition()
+		stats.FinalX = cx
+		stats.FinalY = cy
+		stats.FinalZ = cz
+		stats.DistanceTraveled = distance3D(startX, startY, startZ, cx, cy, cz)
 		if hasTarget {
 			if _, ok := g.(*goal.GoalXZ); ok {
 				stats.FinalDistance = math.Hypot(cx-targetX, cz-targetZ)
@@ -202,6 +233,8 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 		}
 		if err == nil {
 			stats.Reached = true
+		} else if stats.StuckReason == "" {
+			stats.StuckReason = err.Error()
 		}
 		if st, ok := client.(interface{ TrackMovementStats(MovementStats) }); ok {
 			st.TrackMovementStats(stats)
@@ -261,6 +294,17 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 
 	writePacket := func(p protocol.Packet) error {
 		stats.PacketsSent++
+		if pkt, ok := p.(*protocol.PlayServerboundSetPlayerPositionAndRotationPacket); ok {
+			if !stats.HasFirstPacketPos {
+				stats.HasFirstPacketPos = true
+				stats.FirstPacketX = pkt.X
+				stats.FirstPacketY = pkt.Y
+				stats.FirstPacketZ = pkt.Z
+			}
+			stats.LastPacketX = pkt.X
+			stats.LastPacketY = pkt.Y
+			stats.LastPacketZ = pkt.Z
+		}
 		return client.WritePacket(p)
 	}
 
@@ -299,6 +343,12 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 
 		edgeStart := currentPos
 		dest := m.Destination(edgeStart)
+		if !stats.HasFirstTargetNode {
+			stats.HasFirstTargetNode = true
+			stats.FirstTargetNodeX = dest[0]
+			stats.FirstTargetNodeY = dest[1]
+			stats.FirstTargetNodeZ = dest[2]
+		}
 		destX := float64(dest[0]) + 0.5
 		destY := float64(dest[1])
 		destZ := float64(dest[2]) + 0.5
@@ -373,8 +423,12 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					if currSeq != lastSeq {
 						stats.CorrectionsSeen++
 						stats.ServerPositionsSeen++
+						stats.TeleportsSeen++
 						lastSeq = currSeq
 						cx, cy, cz, cyaw, cpitch = client.GetPosition()
+						stats.LastCorrectionX = cx
+						stats.LastCorrectionY = cy
+						stats.LastCorrectionZ = cz
 						yPos = cy
 					}
 				}
@@ -416,6 +470,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 						return ctx.Err()
 					}
 					if len(res.Path) == 0 {
+						stats.StuckReason = fmt.Sprintf("replanning produced empty path (status=%v)", res.Status)
 						return fmt.Errorf("movement stuck: replanning produced empty path (status=%v)", res.Status)
 					}
 					path = res.Path
@@ -437,6 +492,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 				}
 
 				tx, tz := nextHorizontalPosition(cx, cz, destX, destZ, speed)
+				tx, tz = collisionAwareHorizontalPosition(w, cx, cz, tx, tz, cy)
 				if isJump {
 					if i == 0 {
 						yPos += yVel
@@ -507,6 +563,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 			continue
 		}
 		if !stepAdvanced {
+			stats.StuckReason = "did not advance after retry"
 			return fmt.Errorf("movement stuck: did not advance after retry")
 		}
 
@@ -578,6 +635,61 @@ func expandLineMovements(path []move.Movement) []move.Movement {
 		}
 	}
 	return out
+}
+
+func collisionAwareHorizontalPosition(w *world.World, cx, cz, tx, tz, y float64) (float64, float64) {
+	if playerCollisionClear(w, tx, y, tz) {
+		return tx, tz
+	}
+
+	candidates := [][2]float64{
+		{tx, cz},
+		{cx, tz},
+	}
+	for _, cand := range candidates {
+		if playerCollisionClear(w, cand[0], y, cand[1]) {
+			return cand[0], cand[1]
+		}
+	}
+
+	for scale := 0.5; scale >= 0.125; scale *= 0.5 {
+		candX := cx + (tx-cx)*scale
+		candZ := cz + (tz-cz)*scale
+		if playerCollisionClear(w, candX, y, candZ) {
+			return candX, candZ
+		}
+	}
+	return tx, tz
+}
+
+func playerCollisionClear(w *world.World, x, y, z float64) bool {
+	if w == nil {
+		return true
+	}
+	const (
+		halfWidth = 0.3
+		epsilon   = 1.0e-7
+	)
+	minX := int(math.Floor(x - halfWidth + epsilon))
+	maxX := int(math.Floor(x + halfWidth - epsilon))
+	minZ := int(math.Floor(z - halfWidth + epsilon))
+	maxZ := int(math.Floor(z + halfWidth - epsilon))
+	feetY := int(math.Floor(y))
+
+	for bx := minX; bx <= maxX; bx++ {
+		for bz := minZ; bz <= maxZ; bz++ {
+			for _, by := range []int{feetY, feetY + 1} {
+				pos := world.BlockPos{X: int32(bx), Y: int32(by), Z: int32(bz)}
+				if !w.IsBlockLoaded(pos) {
+					continue
+				}
+				if !w.IsPassable(bx, by, bz) {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func horizontalSpeedPerTick(m move.Movement, sprinting bool) float64 {

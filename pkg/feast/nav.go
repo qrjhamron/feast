@@ -642,6 +642,7 @@ type navEventingClient struct {
 	lastBlockPos [3]int
 	lastMovedAt  time.Time
 	emittedStuck bool
+	debugPackets int
 }
 
 func newNavEventingClient(c *Client) *navEventingClient {
@@ -670,6 +671,11 @@ func (n *navEventingClient) PositionSyncSeq() uint64 {
 
 func (n *navEventingClient) WritePacket(p protocol.Packet) error {
 	if pkt, ok := p.(*protocol.PlayServerboundSetPlayerPositionAndRotationPacket); ok {
+		if n.c.opts.Debug && n.debugPackets < 5 {
+			n.debugPackets++
+			log.Printf("[move-debug] packet=%d x=%.3f y=%.3f z=%.3f yaw=%.2f pitch=%.2f on_ground=%v",
+				n.debugPackets, pkt.X, pkt.Y, pkt.Z, pkt.Yaw, pkt.Pitch, pkt.OnGround)
+		}
 		n.c.teleportMu.Lock()
 		n.c.teleportMu.Unlock()
 		n.c.stateMu.Lock()
