@@ -314,6 +314,40 @@ func (d *Dispatcher) dispatchPlay(p *protocol.RawPacket) error {
 		}
 		d.bus.Emit(CloseContainerEvent{WindowID: pkt.WindowID})
 		return nil
+	case consts.PlayClientboundBundleDelimiter:
+		// Bundle Delimiter (0x00) is a zero-payload marker bracketing a group of
+		// packets Paper sends in one tick. The reader delivers packets one at a
+		// time in wire order, so the packets inside the bundle dispatch normally;
+		// the delimiter itself is non-fatal. Emit an internal marker only when a
+		// listener exists, keeping the no-listener path allocation-free. Trailing
+		// bytes (a misframed delimiter) are ignored rather than treated as fatal.
+		if d.bus.has("bundle_delimiter") {
+			d.bus.Emit(BundleDelimiterEvent{})
+		}
+		return nil
+	case consts.PlayClientboundAcknowledgeBlockChange:
+		pkt := &protocol.PlayClientboundAcknowledgeBlockChangePacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(BlockChangeAckEvent{SequenceID: pkt.SequenceID})
+		return nil
+	case consts.PlayClientboundRespawn:
+		pkt := &protocol.PlayClientboundRespawnPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(RespawnEvent{
+			DimensionType:    pkt.DimensionType,
+			DimensionName:    pkt.DimensionName,
+			HashedSeed:       pkt.HashedSeed,
+			GameMode:         pkt.GameMode,
+			PreviousGameMode: pkt.PreviousGameMode,
+			IsDebug:          pkt.IsDebug,
+			IsFlat:           pkt.IsFlat,
+			CopyMetadata:     pkt.CopyMetadata(),
+		})
+		return nil
 	}
 	return nil
 }

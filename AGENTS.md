@@ -1,51 +1,156 @@
-# Repository Guidelines
+# Agent Instructions for FeastGo
 
-## Project Structure & Module Organization
-- `cmd/ping/main.go`: CLI entrypoint for server status ping.
-- `cmd/bot/main.go`: CLI entrypoint for login/chat bot behavior.
-- `pkg/feast/`: internal client orchestrator for login, configuration, play loop, events, and chat.
-- `pkg/state/`: FSM, event bus, and packet dispatcher.
-- `pkg/conn/`: framed transport, compression, and encryption streams.
-- `pkg/protocol/`: packet constants, primitive codecs, framing helpers, and typed packets.
-- `pkg/client_legacy/`: archived raw implementation behind the `legacy` build tag.
-- `pkg/protocol/*_test.go`: unit tests for protocol primitives.
-- `.env`: local runtime configuration (do not commit secrets).
+## Core identity
 
-Keep new executable entrypoints under `cmd/<name>/main.go` and reusable logic under `pkg/<domain>/`.
+FeastGo is an **offline-mode Minecraft Java Edition 1.20.4 / Protocol 765** bot framework written in Go. It is alpha/experimental. The public surface is `pkg/feast`. Everything else is internal infrastructure.
 
-## Build, Test, and Development Commands
-- `go test ./...`: run all unit tests across packages.
-- `go test ./pkg/protocol -v`: run protocol tests with verbose output.
-- `go run ./cmd/ping <host> [port]`: ping a Minecraft server.
-- `go run ./cmd/bot [host] [username] [port]`: run the bot client.
-- `go build ./cmd/ping && go build ./cmd/bot`: build both CLIs.
-- `go fmt ./...`: format all Go source files.
+---
 
-Run commands from repository root (`/root/feastgo`).
+## Non-negotiable constraints
 
-## Coding Style & Naming Conventions
-- Follow standard Go style (`gofmt` formatting, tabs, grouped imports).
-- Use short, package-scoped names in `pkg/protocol`; use descriptive names in `pkg/feast` and `pkg/state` for runtime flow.
-- Exported identifiers use `PascalCase`; internal helpers use `camelCase`.
-- Keep packet IDs and protocol-state comments explicit near handlers.
+- Do **not** add online-mode auth or encryption unless the task explicitly requests it.
+- Do **not** add multi-version support unless explicitly requested.
+- Do **not** touch `pkg/nav/hpa` algorithm, state, or path logic unless the task explicitly says so. Log-only hygiene changes (gating unconditional prints) are acceptable with an explicit note.
+- Do **not** add gameplay features (combat, mining layer, PvP) during protocol/reliability passes.
+- Do **not** commit or push unless explicitly instructed.
+- Do **not** run real server tests unless explicitly instructed.
+- Do **not** fake PASS. If something fails, report it.
+- Do **not** run `git add .`. Stage only the files you intend.
 
-## Testing Guidelines
-- Framework: Go `testing` package.
-- Place tests adjacent to implementation using `*_test.go`.
-- Prefer table-driven tests for protocol encode/decode edge cases.
-- Add/extend tests whenever packet parsing, varint logic, or compression behavior changes.
-- Before PRs: run `go test ./...` and ensure no regressions.
+---
 
-## Commit & Pull Request Guidelines
-- Commit style: imperative, scoped subject lines (e.g., `protocol: fix varint overflow handling`).
-- Keep commits focused; separate refactors from behavior changes.
-- PRs should include:
-  - clear summary of functional changes,
-  - test evidence (exact commands run),
-  - protocol-impact notes if packet/state behavior changed,
-  - terminal output snippets for CLI behavior changes.
+## Dirty working tree rule
 
-## Security & Configuration Tips
-- Prefer `MC_HOST`, `MC_PORT`, and `MC_USERNAME` env vars for local runs.
-- Never hardcode credentials or tokens.
-- Treat `.env` as local-only; provide sanitized examples in docs when needed.
+Always run `git status --short` first. Classify every dirty file before touching any code:
+
+- **A. Intended core changes** — files you plan to edit.
+- **B. Unrelated local experiments** — mining files, server scripts, advanced harness expansions.
+- **C. Unexpected** — anything that should not be dirty; investigate before proceeding.
+
+Known experiment paths that must **never** be staged by a core pass:
+
+```
+tests/advanced_controls/mining.go
+tests/advanced_controls/mining_test.go
+tests/mining_validation/
+tests/mininglib/
+test/server/
+```
+
+---
+
+## Testing expectations
+
+Before any change, run baseline:
+
+```bash
+go test ./pkg/protocol ./pkg/state ./pkg/feast ./pkg/world
+go vet ./pkg/protocol ./pkg/state ./pkg/feast ./pkg/world
+go test -race ./pkg/world ./pkg/state ./pkg/conn ./pkg/feast
+```
+
+After changes, run the same set plus:
+
+```bash
+go test ./pkg/nav/executor ./pkg/nav/planner ./pkg/nav/move
+go vet ./pkg/nav/executor ./pkg/nav/planner ./pkg/nav/move
+go build ./...
+```
+
+Use `go test ./...` as a sanity check. If it fails on out-of-scope packages, report them rather than fixing them.
+
+---
+
+## Logging rule
+
+No unconditional `fmt.Printf` / `log.Printf` on hot paths in `pkg/feast`, `pkg/state`, `pkg/protocol`, or `pkg/world`.
+
+Use the existing gated helper in `pkg/feast/debug.go`:
+
+```go
+c.debugf("message %s", value)          // gated by c.opts.Debug
+c.debugActionf("action", "k=v %d", n)  // gated by c.opts.Debug
+```
+
+For `pkg/nav` sub-packages, use their existing `DebugLogs` flags.
+
+Verify with:
+
+```bash
+grep -Rn "fmt\.Print\|log\.Print\|println" pkg/feast pkg/protocol pkg/state pkg/world pkg/nav \
+  | grep -v "_test.go"
+```
+
+Expected output: only gated helpers, panic-recovery in `bus.go`, world-error log in `chunk.go`, and the feast `c.log` helper (which checks `c.opts.Debug`).
+
+---
+
+## Protocol rule
+
+Before editing any packet codec or adding a new packet ID:
+
+1. Look up the exact packet ID in `pkg/protocol/consts/play.go`.
+2. Cross-check the field layout against PrismarineJS `minecraft-data` for `pc/1.20.3` (the dataset shared by 1.20.3 and 1.20.4; protocol 765).
+3. Write a test that decodes a hand-built wire image (not just a round-trip) to lock field order independently.
+
+Do **not** guess packet IDs. Do **not** invent serverbound packets that do not exist in 765.
+
+---
+
+## Documentation rule
+
+README must be honest:
+
+- State that it is alpha/experimental.
+- List what works and what does not.
+- Do not claim production readiness.
+- Do not invent API names — verify against actual code before documenting.
+- Do not hide limitations.
+
+---
+
+## Package map
+
+| Package | Purpose |
+|---|---|
+| `pkg/protocol` | Packet encoding/decoding, constants, framing |
+| `pkg/state` | FSM, event bus (`EventBus`), packet dispatcher |
+| `pkg/world` | Chunk, block, entity models |
+| `pkg/nav` | A\*, HPA\*, executor, goals, movement |
+| `pkg/feast` | Public client orchestration — start here |
+| `pkg/conn` | Framed transport, compression |
+| `tests/advanced_controls` | Dev harness (not public API) |
+
+---
+
+## Validation checklist (minimum before declaring PASS)
+
+```
+gofmt -w .
+go test ./pkg/protocol ./pkg/state ./pkg/feast ./pkg/world
+go vet ./pkg/protocol ./pkg/state ./pkg/feast ./pkg/world
+go test -race ./pkg/world ./pkg/state ./pkg/conn ./pkg/feast
+go test ./pkg/nav/executor ./pkg/nav/planner ./pkg/nav/move
+go vet ./pkg/nav/executor ./pkg/nav/planner ./pkg/nav/move
+go build ./...
+```
+
+All must pass cleanly before declaring `Final result: PASS`.
+
+---
+
+## Final report expectations
+
+Every task must end with:
+
+1. Scope compliance
+2. Working tree classification
+3. What was changed and why
+4. Raw validation output (actual command output, not paraphrased)
+5. Bugs found (if any)
+6. Files changed list
+7. Safe staging command (`git add` listing individual files)
+8. Do-not-stage list
+9. Final result: PASS / PARTIAL / FAIL
+
+`Final result: PARTIAL` is not a failure. Use it honestly when constraints prevented full completion, and explain what remains.

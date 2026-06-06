@@ -8,6 +8,10 @@ import (
 	"github.com/qrjhamron/feast/pkg/world"
 )
 
+// DebugLogs enables verbose HPA diagnostic logging. Off by default so the hot
+// block-update path produces no output in normal operation.
+var DebugLogs = false
+
 type ClusterCoord struct {
 	X, Z int
 }
@@ -274,5 +278,7 @@ func (m *ClusterManager) Invalidate(blockX, blockZ int) {
 	} else if localZ == 15 {
 		m.GetOrCreate(chunkX, chunkZ+1).dirty = true
 	}
-	log.Printf("[hpa] cluster invalidate block=(%d,%d) clusters=%d built=%d", blockX, blockZ, m.Count(), m.BuiltCount())
+	if DebugLogs {
+		log.Printf("[hpa] cluster invalidate block=(%d,%d) clusters=%d built=%d", blockX, blockZ, m.Count(), m.BuiltCount())
+	}
 }

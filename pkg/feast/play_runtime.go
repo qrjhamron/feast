@@ -2,7 +2,6 @@ package feast
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"time"
 
@@ -80,8 +79,8 @@ func (c *Client) WaitForGround(ctx context.Context) error {
 	}
 
 	startY := c.PlayerState().Y
-	fmt.Printf("[gravity] support_lost=true\n")
-	fmt.Printf("[gravity] start_y=%v\n", startY)
+	c.debugActionf("gravity", "support_lost=true")
+	c.debugActionf("gravity", "start_y=%v", startY)
 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -93,17 +92,17 @@ func (c *Client) WaitForGround(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			st := c.PlayerState()
-			fmt.Printf("[gravity] final_y=%v\n", st.Y)
-			fmt.Printf("[gravity] grounded=%v\n", st.OnGround)
-			fmt.Printf("[gravity] packets_sent=%d\n", packetsSent)
-			fmt.Printf("[gravity] result=FAIL\n")
+			c.debugActionf("gravity", "final_y=%v", st.Y)
+			c.debugActionf("gravity", "grounded=%v", st.OnGround)
+			c.debugActionf("gravity", "packets_sent=%d", packetsSent)
+			c.debugActionf("gravity", "result=FAIL")
 			return ctx.Err()
 		case <-timeoutChan:
 			st := c.PlayerState()
-			fmt.Printf("[gravity] final_y=%v\n", st.Y)
-			fmt.Printf("[gravity] grounded=%v\n", st.OnGround)
-			fmt.Printf("[gravity] packets_sent=%d\n", packetsSent)
-			fmt.Printf("[gravity] result=FAIL\n")
+			c.debugActionf("gravity", "final_y=%v", st.Y)
+			c.debugActionf("gravity", "grounded=%v", st.OnGround)
+			c.debugActionf("gravity", "packets_sent=%d", packetsSent)
+			c.debugActionf("gravity", "result=FAIL")
 			return ErrGravityTimeout
 		case <-ticker.C:
 			st := c.PlayerState()
@@ -129,10 +128,10 @@ func (c *Client) WaitForGround(ctx context.Context) error {
 				}
 				packetsSent++
 
-				fmt.Printf("[gravity] final_y=%v\n", next.Y)
-				fmt.Printf("[gravity] grounded=true\n")
-				fmt.Printf("[gravity] packets_sent=%d\n", packetsSent)
-				fmt.Printf("[gravity] result=PASS\n")
+				c.debugActionf("gravity", "final_y=%v", next.Y)
+				c.debugActionf("gravity", "grounded=true")
+				c.debugActionf("gravity", "packets_sent=%d", packetsSent)
+				c.debugActionf("gravity", "result=PASS")
 				return nil
 			}
 

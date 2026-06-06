@@ -2551,3 +2551,202 @@ func (p *PlayServerboundCloseContainerPacket) Unmarshal(r *Reader) error {
 	p.WindowID, err = r.ReadByte()
 	return err
 }
+
+// --- Protocol 765 (1.20.4) play-state reliability packets ---------------------
+//
+// The three clientbound packets below were verified against PrismarineJS
+// minecraft-data "pc/1.20.3" (the data set 1.20.4 shares; protocol 765), which
+// node-minecraft-protocol / mineflayer use against live 1.20.4 servers. Packet
+// IDs match pkg/protocol/consts/play.go exactly.
+
+// PlayClientboundBundleDelimiterPacket is Bundle Delimiter (clientbound, 0x00).
+//
+// Protocol 765: the server brackets a group of packets that must be applied in
+// the same client tick with two Bundle Delimiters (one before, one after). The
+// packet itself has NO payload (minecraft-data models it as "void"). FeastGo's
+// reader already delivers packets one at a time in wire order, so the delimiter
+// is a non-fatal marker only; the packets inside a bundle dispatch normally and
+// in the order received.
+type PlayClientboundBundleDelimiterPacket struct{}
+
+func (p *PlayClientboundBundleDelimiterPacket) PacketID() int32 {
+	return consts.PlayClientboundBundleDelimiter
+}
+
+// Marshal writes nothing: a Bundle Delimiter is a zero-length body.
+func (p *PlayClientboundBundleDelimiterPacket) Marshal(w *Writer) error { return nil }
+
+// Unmarshal enforces the zero-length body. It reads a single byte and requires
+// EOF; any trailing byte means the frame was mis-identified and decoding it as a
+// delimiter would desync the stream. Probing one byte (rather than draining the
+// reader with io.ReadAll) keeps the common empty-payload path allocation-free.
+func (p *PlayClientboundBundleDelimiterPacket) Unmarshal(r *Reader) error {
+	if _, err := r.ReadByte(); err == nil {
+		return fmt.Errorf("protocol: bundle delimiter expects zero payload")
+	} else if err != io.EOF {
+		return err
+	}
+	return nil
+}
+
+// PlayClientboundAcknowledgeBlockChangePacket is Acknowledge Block Change
+// (clientbound, 0x05).
+//
+// Protocol 765: sent by the SERVER to acknowledge a block-change sequence the
+// client previously sent in the trailing "Sequence" VarInt of Player Action
+// (0x21), Use Item On (0x35) or Use Item (0x36). It carries a single VarInt
+// sequence id. There is NO serverbound Acknowledge Block Change packet in 765;
+// the serverbound half of this handshake is the per-action Sequence field that
+// PlayServerboundPlayerActionPacket and PlayServerboundUseItemOnPacket already
+// emit.
+//
+// An acknowledgement only tells the client the server has processed up to that
+// sequence so it may stop predicting it; it does NOT by itself mean a placement
+// or break succeeded. The authoritative result is still the Block Update (0x09)
+// / Update Section Blocks (0x47) the server sends for the affected block(s).
+// (minecraft-data names this packet "acknowledge_player_digging".)
+type PlayClientboundAcknowledgeBlockChangePacket struct {
+	SequenceID int32
+}
+
+func (p *PlayClientboundAcknowledgeBlockChangePacket) PacketID() int32 {
+	return consts.PlayClientboundAcknowledgeBlockChange
+}
+func (p *PlayClientboundAcknowledgeBlockChangePacket) Marshal(w *Writer) error {
+	return w.WriteVarInt(p.SequenceID)
+}
+func (p *PlayClientboundAcknowledgeBlockChangePacket) Unmarshal(r *Reader) error {
+	seq, err := r.ReadVarInt()
+	if err != nil {
+		return err
+	}
+	p.SequenceID = seq
+	return nil
+}
+
+// PlayClientboundRespawnPacket is Respawn (clientbound, 0x45).
+//
+// Protocol 765 field layout (verified against minecraft-data pc/1.20.3):
+//
+//	Dimension Type      Identifier (String)  registry key of the dimension type
+//	Dimension Name      Identifier (String)  the world/dimension being entered
+//	Hashed Seed         Long
+//	Game Mode           Unsigned Byte        0 survival,1 creative,2 adventure,3 spectator
+//	Previous Game Mode  Byte                 -1 if none
+//	Is Debug            Boolean
+//	Is Flat             Boolean
+//	Has Death Location  Boolean
+//	  Death Dimension   Identifier (String)  only if Has Death Location
+//	  Death Location    Position             only if Has Death Location
+//	Portal Cooldown     VarInt
+//	Data Kept           Unsigned Byte        bitmask: 0x01 keep attributes, 0x02 keep metadata
+//
+// "Data Kept" is a single byte on the wire (minecraft-data models it as the
+// boolean "copyMetadata"); it is decoded verbatim as a bitmask so no information
+// is lost. The dimension type/name are 1.20.2+ string Identifiers, not the
+// VarInt registry ids introduced in 1.20.5 / protocol 766.
+type PlayClientboundRespawnPacket struct {
+	DimensionType    string
+	DimensionName    string
+	HashedSeed       int64
+	GameMode         byte
+	PreviousGameMode byte
+	IsDebug          bool
+	IsFlat           bool
+	HasDeathLocation bool
+	DeathDimension   string
+	DeathLocation    BlockPos
+	PortalCooldown   int32
+	DataKept         byte
+}
+
+func (p *PlayClientboundRespawnPacket) PacketID() int32 { return consts.PlayClientboundRespawn }
+
+func (p *PlayClientboundRespawnPacket) Marshal(w *Writer) error {
+	if err := w.WriteString(p.DimensionType); err != nil {
+		return err
+	}
+	if err := w.WriteString(p.DimensionName); err != nil {
+		return err
+	}
+	if err := w.WriteLong(p.HashedSeed); err != nil {
+		return err
+	}
+	if err := w.WriteByte(p.GameMode); err != nil {
+		return err
+	}
+	if err := w.WriteByte(p.PreviousGameMode); err != nil {
+		return err
+	}
+	if err := w.WriteBoolean(p.IsDebug); err != nil {
+		return err
+	}
+	if err := w.WriteBoolean(p.IsFlat); err != nil {
+		return err
+	}
+	if err := w.WriteBoolean(p.HasDeathLocation); err != nil {
+		return err
+	}
+	if p.HasDeathLocation {
+		if err := w.WriteString(p.DeathDimension); err != nil {
+			return err
+		}
+		if err := writeBlockPos(w, p.DeathLocation); err != nil {
+			return err
+		}
+	}
+	if err := w.WriteVarInt(p.PortalCooldown); err != nil {
+		return err
+	}
+	return w.WriteByte(p.DataKept)
+}
+
+func (p *PlayClientboundRespawnPacket) Unmarshal(r *Reader) error {
+	var err error
+	if p.DimensionType, err = r.ReadString(); err != nil {
+		return err
+	}
+	if p.DimensionName, err = r.ReadString(); err != nil {
+		return err
+	}
+	if p.HashedSeed, err = r.ReadLong(); err != nil {
+		return err
+	}
+	if p.GameMode, err = r.ReadByte(); err != nil {
+		return err
+	}
+	if p.PreviousGameMode, err = r.ReadByte(); err != nil {
+		return err
+	}
+	if p.IsDebug, err = r.ReadBoolean(); err != nil {
+		return err
+	}
+	if p.IsFlat, err = r.ReadBoolean(); err != nil {
+		return err
+	}
+	if p.HasDeathLocation, err = r.ReadBoolean(); err != nil {
+		return err
+	}
+	if p.HasDeathLocation {
+		if p.DeathDimension, err = r.ReadString(); err != nil {
+			return err
+		}
+		if p.DeathLocation, err = readBlockPos(r); err != nil {
+			return err
+		}
+	}
+	if p.PortalCooldown, err = r.ReadVarInt(); err != nil {
+		return err
+	}
+	if p.DataKept, err = r.ReadByte(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CopyMetadata reports whether the server asked the client to keep entity
+// metadata across this respawn (Data Kept bit 0x02). FeastGo does not act on it
+// today, but the decoded value is surfaced for callers that need it.
+func (p *PlayClientboundRespawnPacket) CopyMetadata() bool {
+	return p.DataKept&0x02 != 0
+}

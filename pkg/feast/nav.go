@@ -3,7 +3,6 @@ package feast
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"sync/atomic"
 	"time"
@@ -338,12 +337,12 @@ func (c *Client) logNavFailed(reason string) {
 	// override any per-segment success left in the stats by the last executor
 	// run, otherwise callers see a stale Reached=true alongside a failure.
 	c.setNavReached(false)
-	log.Printf("[nav] result=FAIL reason=%s", reason)
+	c.debugActionf("nav", "result=FAIL reason=%s", reason)
 }
 
 func (c *Client) logNavArrived(x, y, z int) {
 	c.setNavReached(true)
-	log.Printf("[nav] result=OK arrived=(%d,%d,%d)", x, y, z)
+	c.debugActionf("nav", "result=OK arrived=(%d,%d,%d)", x, y, z)
 }
 
 // setNavReached updates only the Reached flag of the last movement stats so the
@@ -355,11 +354,11 @@ func (c *Client) setNavReached(reached bool) {
 }
 
 func (c *Client) logNavPlanning(attempt, fromX, fromY, fromZ, toX, toY, toZ int) {
-	log.Printf("[nav] planning attempt=%d from=(%d,%d,%d) to=(%d,%d,%d)", attempt, fromX, fromY, fromZ, toX, toY, toZ)
+	c.debugActionf("nav", "planning attempt=%d from=(%d,%d,%d) to=(%d,%d,%d)", attempt, fromX, fromY, fromZ, toX, toY, toZ)
 }
 
 func (c *Client) logNavPathFound(steps int) {
-	log.Printf("[nav] path found steps=%d", steps)
+	c.debugActionf("nav", "path found steps=%d", steps)
 }
 
 func blockToChunkCoord(block int) int {
@@ -677,7 +676,7 @@ func (n *navEventingClient) WritePacket(p protocol.Packet) error {
 	if pkt, ok := p.(*protocol.PlayServerboundSetPlayerPositionAndRotationPacket); ok {
 		if n.c.opts.Debug && n.debugPackets < 5 {
 			n.debugPackets++
-			log.Printf("[move-debug] packet=%d x=%.3f y=%.3f z=%.3f yaw=%.2f pitch=%.2f on_ground=%v",
+			n.c.debugActionf("move-debug", "packet=%d x=%.3f y=%.3f z=%.3f yaw=%.2f pitch=%.2f on_ground=%v",
 				n.debugPackets, pkt.X, pkt.Y, pkt.Z, pkt.Yaw, pkt.Pitch, pkt.OnGround)
 		}
 		n.c.teleportMu.Lock()

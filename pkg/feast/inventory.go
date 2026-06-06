@@ -56,14 +56,7 @@ var placementSequence int32
 
 // debugPlaceSurvival prints a [place-survival] log line only when Debug is enabled.
 func (c *Client) debugPlaceSurvival(format string, args ...any) {
-	if !c.opts.Debug {
-		return
-	}
-	if len(args) == 0 {
-		fmt.Printf("[place-survival] %s\n", format)
-	} else {
-		fmt.Printf("[place-survival] "+format+"\n", args...)
-	}
+	c.debugActionf("place-survival", format, args...)
 }
 
 // Inventory returns a pointer to a thread-safe copy of the client's inventory state.

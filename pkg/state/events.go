@@ -352,3 +352,44 @@ type CloseContainerEvent struct {
 
 // EventType returns event key.
 func (e CloseContainerEvent) EventType() string { return "close_container" }
+
+// BundleDelimiterEvent is emitted when a clientbound Bundle Delimiter (0x00) is
+// received. It is an internal marker with no payload; consumers normally do not
+// need it because the dispatcher already delivers the packets inside a bundle in
+// order. It exists so advanced callers can observe bundle boundaries.
+type BundleDelimiterEvent struct{}
+
+// EventType returns event key.
+func (e BundleDelimiterEvent) EventType() string { return "bundle_delimiter" }
+
+// BlockChangeAckEvent is emitted when the server acknowledges a block-change
+// sequence via Acknowledge Block Change (0x05). It reports the sequence id the
+// client previously sent in a Player Action / Use Item On / Use Item packet.
+//
+// An ack only means the server processed up to this sequence; it is NOT a
+// confirmation that a placement or break succeeded. The authoritative result is
+// still the Block Update / Section Blocks Update for the affected block.
+type BlockChangeAckEvent struct {
+	SequenceID int32
+}
+
+// EventType returns event key.
+func (e BlockChangeAckEvent) EventType() string { return "block_change_ack" }
+
+// RespawnEvent is emitted when the server sends Respawn (0x45): a death respawn
+// or a dimension change. Fields mirror the decoded packet; consumers should
+// treat it as a signal that world/entity/position state for the previous
+// dimension is now stale.
+type RespawnEvent struct {
+	DimensionType    string
+	DimensionName    string
+	HashedSeed       int64
+	GameMode         byte
+	PreviousGameMode byte
+	IsDebug          bool
+	IsFlat           bool
+	CopyMetadata     bool
+}
+
+// EventType returns event key.
+func (e RespawnEvent) EventType() string { return "respawn" }

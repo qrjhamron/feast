@@ -1,31 +1,64 @@
 # FeastGo
 
-**FeastGo** is an offline-mode Minecraft Java Edition bot framework written in Go.
-It is designed as a clean, embeddable library – similar in spirit to Mineflayer or Azalea –
-exposing a high-level API on top of a tested, Protocol-765-compliant transport stack.
+A Go-native Minecraft Java Edition bot framework. Protocol 765 / Minecraft 1.20.4.
 
-> ⚠️ **Offline-mode only.** FeastGo does **not** support Microsoft/Mojang authentication,
-> Yggdrasil, online-mode encryption, or the Minecraft encryption handshake.
-> It is for use with servers that have `online-mode=false`.
+FeastGo gives you a fully typed, embeddable bot runtime in pure Go — no Node.js, no browser runtime, no Electron. Connect to an offline-mode 1.20.4 server, track world state, navigate terrain, break and place blocks, manage inventory, and react to events, all from clean Go code.
 
 ---
 
-## Supported Version
+## Why FeastGo?
 
-| Property | Value |
+- **Go-native** — one `go get`, no FFI, no subprocess
+- **Typed protocol** — every packet is a proper struct; nothing is stringly typed
+- **World state** — full chunk/block/entity tracking with an A\* + HPA\* nav stack
+- **Strong test culture** — unit tests, race tests, protocol codec tests, no fake-pass
+- **Honest scope** — offline-mode 1.20.4 only; limitations are documented, not hidden
+
+---
+
+## Status
+
+**Alpha / experimental.** The core protocol stack is working and tested against a local Paper 1.20.4 server. APIs are stable enough to build real bots with, but may change as the library matures.
+
+| | |
 |---|---|
 | Minecraft | Java Edition **1.20.4** |
 | Protocol | **765** |
-| Tested server | **Paper 1.20.4** |
-| Vanilla | Not tested |
-| Multi-version | Not supported |
+| Auth | **Offline-mode only** (`online-mode=false`) |
+| Tested server | Paper 1.20.4 |
 
-Latest real-world validation in this checkout used a local/private Paper
-1.20.4 server reporting protocol 765 with `online-mode=false`.
+---
+
+## What works
+
+| Feature | Status |
+|---|---|
+| Offline login + play handshake | ✅ |
+| KeepAlive | ✅ |
+| Chunk / world tracking | ✅ |
+| Block update / section blocks | ✅ |
+| Entity tracking (spawn, move, remove, metadata, hitboxes) | ✅ |
+| Chat send / receive | ✅ |
+| Local A\* pathfinding | ✅ |
+| HPA\* pathfinding | ✅ |
+| Navigation (`NavigateTo`) | ✅ |
+| Block break | ✅ |
+| Block place (creative + survival) | ✅ |
+| Survival inventory tracking | ✅ |
+| Container/chest operations | ✅ |
+| Protocol 765 Bundle Delimiter | ✅ |
+| Protocol 765 Acknowledge Block Change | ✅ |
+| Protocol 765 Respawn / dimension change | ✅ |
+| Clean disconnect | ✅ |
+| Online-mode auth / encryption | ❌ not supported |
+| Multi-version | ❌ not planned |
+| Command Graph | ❌ not yet |
 
 ---
 
 ## Install
+
+Requires Go 1.22+.
 
 ```bash
 go get github.com/qrjhamron/feast/pkg/feast
@@ -53,170 +86,119 @@ func main() {
     bot, err := feast.Connect(ctx, feast.Options{
         Host:     "127.0.0.1",
         Port:     "25565",
-        Username: "FeastGoBot",
+        Username: "FeastBot",
     })
     if err != nil {
         log.Fatal(err)
     }
     defer bot.Disconnect()
 
-    // Event hook registration.
-    bot.OnChat(func(e feast.ChatEvent) {
-        fmt.Printf("[chat] %s: %s\n", e.Sender, e.Message)
-    })
-
-    // Wait until position-synced and ready.
+    // Block until the server sends the first position sync.
     if err := bot.WaitUntilReady(ctx); err != nil {
         log.Fatal(err)
     }
 
-    // Find nearest grass block and navigate to it.
-    hit, ok := bot.FindNearestBlock("grass_block", 64)
-    if ok {
-        g := goal.NewGoalBlock(hit.X, hit.Y+1, hit.Z)
-        _ = bot.NavigateTo(ctx, g)
+    pos := bot.Position()
+    fmt.Printf("spawned at %.1f %.1f %.1f\n", pos.X, pos.Y, pos.Z)
+
+    // Listen for chat.
+    bot.OnChat(func(e feast.ChatEvent) {
+        fmt.Printf("<%s> %s\n", e.Sender, e.Message)
+    })
+
+    // Find and walk to nearest grass block.
+    if hit, ok := bot.FindNearestBlock("grass_block", 64); ok {
+        _ = bot.NavigateTo(ctx, goal.NewGoalBlock(hit.X, hit.Y+1, hit.Z))
     }
+
+    // Stay alive until Ctrl+C.
+    select {}
 }
 ```
 
 ---
 
-## Feature Matrix
+## Architecture
 
-| Feature | Status |
-|---|---|
-| Offline login | ✅ |
-| Configuration + Play handshake | ✅ |
-| KeepAlive | ✅ |
-| Chunk / world tracking | ✅ |
-| Chat send / receive | ✅ |
-| Entity tracking (spawn, move, remove) | ✅ |
-| Entity metadata + hitboxes | ✅ |
-| Local A\* pathfinding | ✅ |
-| HPA\* pathfinding | ✅ |
-| Navigation (NavigateTo) | ✅ |
-| Block break | ✅ |
-| Creative block place | ✅ |
-| Survival block place | ✅ |
-| Survival inventory tracking | ✅ |
-| Entity-aware pathfinding | ✅ |
-| Clean disconnect | ✅ |
-| Online-mode auth | ❌ intentionally excluded |
-| Encryption | ❌ intentionally excluded |
-| Command Graph | ❌ not yet |
-| Multi-version | ❌ not planned |
+```
+pkg/
+  feast/      public client API ← start here
+  protocol/   packet codecs, constants, framing
+  state/      FSM, event bus, packet dispatcher
+  world/      chunk/block/entity models
+  nav/        A*, HPA*, executor, goals, movement
+
+cmd/
+  bot/        minimal interactive demo bot
+  ping/       server status / MOTD query
+  smoke/      offline integration CLI
+
+tests/
+  advanced_controls/   dev harness (not public API)
+```
+
+The public surface lives entirely in `pkg/feast`. Everything else is internal infrastructure.
 
 ---
 
-## Public API Overview
+## Public API
 
 ```go
-// Connect creates and returns a connected Client.
-func Connect(ctx context.Context, opts Options) (*Client, error)
-
-// NewClient creates a Client without connecting.
-func NewClient(opts Options) *Client
-
 // Connection
-func (c *Client) Connect() error
-func (c *Client) Disconnect() error
-func (c *Client) WaitUntilReady(ctx context.Context) error
+feast.Connect(ctx, opts)        → *Client, error   // dial + login + play handshake
+feast.NewClient(opts)           → *Client           // create without connecting
+client.Connect()                → error
+client.Disconnect()             → error
+client.WaitUntilReady(ctx)      → error             // blocks until first position sync
 
-// Chat
-func (c *Client) Chat(message string) error
-func (c *Client) SendChat(message string) error
-
-// State
-func (c *Client) Position() world.Vec3
-func (c *Client) Health() float32
-func (c *Client) Food() int32
-
-// World & entities
-func (c *Client) World() *world.World
-func (c *Client) Entities() *world.EntityStore
-func (c *Client) Inventory() *InventoryState
-
-// Block search
-func (c *Client) FindNearestBlock(name string, radius int) (world.BlockHit, bool)
+// World state
+client.Position()               → world.Vec3
+client.Health()                 → float32
+client.Food()                   → int32
+client.World()                  → *world.World
+client.Entities()               → *world.EntityStore
+client.Inventory()              → *InventoryState
+client.FindNearestBlock(name, radius) → (BlockHit, bool)
 
 // Navigation
-func (c *Client) NavigateTo(ctx context.Context, g goal.Goal) error
-func (c *Client) StopNavigation()
+client.NavigateTo(ctx, goal)    → error
+client.StopNavigation()
 
-// Block interaction
-func (c *Client) BreakBlock(ctx context.Context, pos BlockPos) error
-func (c *Client) PlaceBlockCreative(ctx context.Context, target BlockPos, face Direction, blockName string) error
-func (c *Client) PlaceBlockSurvival(ctx context.Context, target BlockPos, face Direction) error
+// Interaction
+client.BreakBlock(ctx, pos)     → error
+client.PlaceBlockCreative(ctx, target, face, blockName) → error
+client.PlaceBlockSurvival(ctx, target, face) → error
+client.Chat(message)            → error
 
 // Inventory
-func (c *Client) SelectHotbarSlot(ctx context.Context, slot int) error
-func (c *Client) HeldItem() (ItemStack, bool)
-func (c *Client) FindHotbarItem(name string) (slot int, stack ItemStack, ok bool)
+client.SelectHotbarSlot(ctx, slot) → error
+client.HeldItem()               → (ItemStack, bool)
+client.FindHotbarItem(name)     → (slot, ItemStack, bool)
 
-// Event hooks
-func (c *Client) OnReady(fn func())
-func (c *Client) OnChat(fn func(ChatEvent))
-func (c *Client) OnHealth(fn func(HealthEvent))
-func (c *Client) OnPosition(fn func(PositionEvent))
-func (c *Client) OnBlockUpdate(fn func(BlockUpdateEvent))
-func (c *Client) OnEntitySpawn(fn func(EntityEvent))
-func (c *Client) OnEntityMove(fn func(EntityEvent))
-func (c *Client) OnEntityRemove(fn func(EntityEvent))
-func (c *Client) OnError(fn func(error))
-func (c *Client) OnDisconnect(fn func(error))
-
-// Low-level (escape hatch)
-func (c *Client) On(eventType string, handler func(state.Event)) (int, error)
-func (c *Client) Events() *state.EventBus
-func (c *Client) WritePacket(p protocol.Packet) error
+// Events (return unsubscribe func)
+client.OnReady(func())
+client.OnChat(func(ChatEvent))
+client.OnHealth(func(HealthEvent))
+client.OnPosition(func(PositionEvent))
+client.OnBlockUpdate(func(BlockUpdateEvent))
+client.OnEntitySpawn(func(EntityEvent))
+client.OnEntityMove(func(EntityEvent))
+client.OnEntityRemove(func(EntityEvent))
+client.OnError(func(error))
+client.OnDisconnect(func(error))
 ```
 
 ---
 
-## Commands
+## Protocol Compatibility (765)
 
-### `cmd/ping` – Server Status
+Three reliability pieces were added for Paper 1.20.4:
 
-```bash
-go run ./cmd/ping <host> [port]
-```
+**Bundle Delimiter (`0x00`)** — Paper groups packets that must land in the same tick between two delimiters. FeastGo recognises them and keeps dispatch in order without desyncing the stream.
 
-Queries the server's status packet (ping + MOTD) without logging in.
+**Acknowledge Block Change (`0x05`)** — The server sends a sequence acknowledgement for every break/place action. FeastGo decodes it and routes it through the event bus. The authoritative result of a break or place is still the `Block Update` that follows; the ack alone does not mark anything as succeeded.
 
-### `cmd/bot` – Demo Bot
-
-```bash
-MC_HOST=127.0.0.1 MC_USERNAME=FeastGoBot go run ./cmd/bot
-```
-
-A minimal interactive bot that connects, prints events, reads chat from stdin,
-and shuts down cleanly on `Ctrl+C` or `!quit`.
-
-### `cmd/smoke` – Smoke/Integration Test CLI
-
-```bash
-go run ./cmd/smoke --smoke-world
-go run ./cmd/smoke --smoke-break-block
-go run ./cmd/smoke --hpa-test
-go run ./cmd/smoke --soak 30s
-```
-
-Connects to a live server and exercises one feature per run. Each mode prints
-structured `[tag] key=value` lines and ends with `result=PASS` / `result=FAIL`.
-
-Run all smoke modes at once:
-
-```bash
-bash ./test/smoke/scripts/run_paper_smoke.sh
-```
-
-Full flag list: `go run ./cmd/smoke --help`
-
-Public API validation runner:
-
-```bash
-MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./examples/public_api_validation
-```
+**Respawn (`0x45`)** — On death or dimension change the server sends Respawn. FeastGo decodes the full Protocol 765 layout, clears stale world chunks, block entities, and tracked entities, cancels active navigation, and marks position unsynced. The bot becomes ready again after the next server position sync.
 
 ---
 
@@ -224,8 +206,8 @@ MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./examples/public_
 
 | Example | What it shows |
 |---|---|
-| `examples/basic_join` | Connect, WaitUntilReady, status |
-| `examples/chat_echo` | OnChat, Chat, echo bot |
+| `examples/basic_join` | Connect, WaitUntilReady, read position |
+| `examples/chat_echo` | OnChat, Chat — echo bot |
 | `examples/find_block` | FindNearestBlock |
 | `examples/navigate_to_block` | FindNearestBlock + NavigateTo |
 | `examples/break_block` | BreakBlock, OnBlockUpdate |
@@ -241,7 +223,25 @@ MC_HOST=127.0.0.1 go run ./examples/basic_join
 
 ---
 
-## Testing
+## Commands
+
+```bash
+# Query server status (no login)
+go run ./cmd/ping 127.0.0.1
+
+# Interactive demo bot
+MC_HOST=127.0.0.1 MC_USERNAME=FeastBot go run ./cmd/bot
+
+# Smoke/integration CLI (one feature per run, exits with result=PASS/FAIL)
+go run ./cmd/smoke --smoke-world
+go run ./cmd/smoke --smoke-break-block
+go run ./cmd/smoke --hpa-test
+go run ./cmd/smoke --soak 30s
+```
+
+---
+
+## Development
 
 ### Unit tests (no server required)
 
@@ -255,56 +255,33 @@ go test ./...
 go test -race ./pkg/world ./pkg/state ./pkg/conn ./pkg/feast
 ```
 
-### Integration tests (require a live server)
+### Integration tests (require a live offline-mode server)
 
 ```bash
-export MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot
+export MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastBot
 go test ./test/integration -tags=integration -v
 ```
 
 Without a server, integration tests skip cleanly.
 
-### Smoke scripts
+### Build
 
 ```bash
-bash ./test/smoke/scripts/run_paper_smoke.sh
-bash ./test/smoke/scripts/run_local_validation.sh  # no server needed
+go build ./...
 ```
 
 ---
 
-## Package Structure
+## Safety and Limitations
 
-```
-cmd/
-  bot/      simple demo bot
-  ping/     server status ping
-  smoke/    smoke / integration test CLI
-
-pkg/
-  feast/    public client API  ← start here
-  world/    chunk, block, entity models
-  nav/      pathfinding (A*, HPA*, executor, goals, moves)
-  state/    FSM, event bus, packet dispatcher
-  conn/     framed transport, compression
-  protocol/ packet codecs, constants
-
-internal/
-  smoke/    shared helpers for cmd/smoke
-
-test/
-  integration/   live-server integration tests (build tag: integration)
-  smoke/         smoke scripts and README
-
-examples/   one example per feature
-```
+- **Offline-mode only.** FeastGo does not implement Microsoft/Mojang/Yggdrasil authentication, the online-mode encryption handshake, or the shared-secret flow. It connects only to servers with `online-mode=false`.
+- **Single protocol version.** Protocol 765 / Minecraft 1.20.4 only.
+- **Vanilla untested.** Validated exclusively against Paper 1.20.4.
+- **No anti-cheat bypass.** FeastGo is a clean bot framework.
+- **Alpha API.** Public API shapes are stable in practice but may change before a 1.0 release.
 
 ---
 
-## Remaining Limitations
+## Project Philosophy
 
-- **Offline-mode only** – online-mode auth, encryption, and Microsoft/Mojang/Yggdrasil login are intentionally not supported.
-- **No Command Graph** – server command tab-completion is not implemented.
-- **No multi-version** – only Protocol 765 / Minecraft 1.20.4.
-- **Vanilla untested** – validated against Paper 1.20.4 only; vanilla may differ.
-- **No exploit/bypass logic** – FeastGo is a clean bot framework, not an exploit tool.
+FeastGo prioritises protocol correctness and runtime reliability over feature count. A bot that silently desyncs after a death respawn or a bundle of packets is worse than a bot with fewer features. Every public behaviour is tested; every known limitation is documented. There is no faking of PASS.

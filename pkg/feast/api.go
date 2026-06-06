@@ -399,8 +399,8 @@ func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ..
 	}
 
 	blockName := blockState.Name
-	fmt.Printf("[break] auto_tool=%v\n", autoTool)
-	fmt.Printf("[break] target_block=%s\n", blockName)
+	c.debugActionf("break", "auto_tool=%v", autoTool)
+	c.debugActionf("break", "target_block=%s", blockName)
 
 	selectedToolName := "none"
 	selectedSlot := -1
@@ -434,15 +434,15 @@ func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ..
 					return BreakResult{}, fmt.Errorf("failed to select tool slot: %w", err)
 				}
 			}
-			fmt.Printf("[break] selected_tool=%s\n", selectedToolName)
-			fmt.Printf("[break] selected_slot=%d\n", selectedSlot)
+			c.debugActionf("break", "selected_tool=%s", selectedToolName)
+			c.debugActionf("break", "selected_slot=%d", selectedSlot)
 		} else {
 			heldItem, hasHeld := c.HeldItem()
 			if hasHeld {
 				selectedToolName = heldItem.Name
 			}
-			fmt.Printf("[break] selected_tool=%s\n", selectedToolName)
-			fmt.Printf("[break] selected_slot=%d\n", currentSlot)
+			c.debugActionf("break", "selected_tool=%s", selectedToolName)
+			c.debugActionf("break", "selected_slot=%d", currentSlot)
 		}
 	} else {
 		heldItem, hasHeld := c.HeldItem()
@@ -456,13 +456,13 @@ func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ..
 		delay = c.estimateBreakDelay(blockName, selectedToolName)
 	}
 
-	fmt.Printf("[break-debug] pos=%.2f,%.2f,%.2f\n", bx, by, bz)
-	fmt.Printf("[break-debug] eye=%.2f,%.2f,%.2f\n", eyeX, eyeY, eyeZ)
-	fmt.Printf("[break-debug] target_center=%.2f,%.2f,%.2f\n", tcX, tcY, tcZ)
-	fmt.Printf("[break-debug] distance=%.2f\n", distance)
-	fmt.Printf("[break-debug] within_reach=%v\n", withinReach)
-	fmt.Printf("[break-debug] selected_tool=%s\n", selectedToolName)
-	fmt.Printf("[break-debug] estimated_break_delay=%s\n", delay)
+	c.debugActionf("break-debug", "pos=%.2f,%.2f,%.2f", bx, by, bz)
+	c.debugActionf("break-debug", "eye=%.2f,%.2f,%.2f", eyeX, eyeY, eyeZ)
+	c.debugActionf("break-debug", "target_center=%.2f,%.2f,%.2f", tcX, tcY, tcZ)
+	c.debugActionf("break-debug", "distance=%.2f", distance)
+	c.debugActionf("break-debug", "within_reach=%v", withinReach)
+	c.debugActionf("break-debug", "selected_tool=%s", selectedToolName)
+	c.debugActionf("break-debug", "estimated_break_delay=%s", delay)
 
 	if !withinReach {
 		return BreakResult{}, fmt.Errorf("%w (distance %.2f)", ErrBreakOutOfReach, distance)
@@ -496,9 +496,9 @@ func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ..
 	defer c.bus.Off(sectionHandlerID)
 
 	face := c.determineDigFace(world.Vec3{X: bx, Y: by, Z: bz}, pos)
-	fmt.Printf("[break-debug] face=%d\n", face)
+	c.debugActionf("break-debug", "face=%d", face)
 	seq := int32(atomic.AddInt32(&placementSequence, 1))
-	fmt.Printf("[break] sequence_id=%d\n", seq)
+	c.debugActionf("break", "sequence_id=%d", seq)
 
 	// Look-at-target step
 	yaw, pitch := CalculateLookRotation(eyeX, eyeY, eyeZ, tcX, tcY, tcZ)
@@ -510,14 +510,14 @@ func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ..
 		Pitch:    pitch,
 		OnGround: playerSt.OnGround,
 	}
-	fmt.Printf("[look] eye=%f,%f,%f\n", eyeX, eyeY, eyeZ)
-	fmt.Printf("[look] target=%f,%f,%f\n", tcX, tcY, tcZ)
-	fmt.Printf("[look] yaw=%f\n", yaw)
-	fmt.Printf("[look] pitch=%f\n", pitch)
+	c.debugActionf("look", "eye=%f,%f,%f", eyeX, eyeY, eyeZ)
+	c.debugActionf("look", "target=%f,%f,%f", tcX, tcY, tcZ)
+	c.debugActionf("look", "yaw=%f", yaw)
+	c.debugActionf("look", "pitch=%f", pitch)
 	if err := c.WritePacket(lookPkt); err != nil {
 		return BreakResult{}, fmt.Errorf("failed to look at target: %w", err)
 	}
-	fmt.Printf("[look] sent=true\n")
+	c.debugActionf("look", "sent=true")
 
 	start := &protocol.PlayServerboundPlayerActionPacket{
 		Status:   protocol.PlayerActionStartDigging,
@@ -526,10 +526,10 @@ func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ..
 		Sequence: seq,
 	}
 	if err := c.WritePacket(start); err != nil {
-		fmt.Printf("[break-debug] start_sent=false\n")
+		c.debugActionf("break-debug", "start_sent=false")
 		return BreakResult{}, fmt.Errorf("break block start: %w", err)
 	}
-	fmt.Printf("[break-debug] start_sent=true\n")
+	c.debugActionf("break-debug", "start_sent=true")
 
 	if !creative && delay > 0 {
 		select {
@@ -546,35 +546,35 @@ func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ..
 		Sequence: seq,
 	}
 	if err := c.WritePacket(finish); err != nil {
-		fmt.Printf("[break-debug] finish_sent=false\n")
+		c.debugActionf("break-debug", "finish_sent=false")
 		return BreakResult{}, fmt.Errorf("break block finish: %w", err)
 	}
-	fmt.Printf("[break-debug] finish_sent=true\n")
+	c.debugActionf("break-debug", "finish_sent=true")
 
 	var finalStateName string = "unknown"
 
 	startTime := time.Now()
 	select {
 	case <-ctx.Done():
-		fmt.Printf("[break-debug] update_seen=false\n")
-		fmt.Printf("[break-debug] final_state=unknown\n")
+		c.debugActionf("break-debug", "update_seen=false")
+		c.debugActionf("break-debug", "final_state=unknown")
 		return BreakResult{}, ctx.Err()
 	case <-ch:
 		newState, err := c.world.GetBlock(int(pos.X), int(pos.Y), int(pos.Z))
 		if err != nil {
-			fmt.Printf("[break-debug] update_seen=true\n")
-			fmt.Printf("[break-debug] final_state=unknown\n")
+			c.debugActionf("break-debug", "update_seen=true")
+			c.debugActionf("break-debug", "final_state=unknown")
 			return BreakResult{}, err
 		}
 		finalStateName = newState.Name
-		fmt.Printf("[break-debug] update_seen=true\n")
-		fmt.Printf("[break-debug] final_state=%s\n", finalStateName)
+		c.debugActionf("break-debug", "update_seen=true")
+		c.debugActionf("break-debug", "final_state=%s", finalStateName)
 
 		if !c.world.IsReplaceable(world.BlockPos(pos)) || newState.Name == blockName {
-			fmt.Printf("[break] rollback detected: expected air/replaceable, got %s\n", newState.Name)
+			c.debugActionf("break", "rollback detected: expected air/replaceable, got %s", newState.Name)
 			return BreakResult{}, ErrBreakRolledBack
 		}
-		fmt.Printf("[break] result=PASS\n")
+		c.debugActionf("break", "result=PASS")
 		return BreakResult{
 			Position: pos,
 			OldBlock: blockName,
@@ -583,8 +583,8 @@ func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ..
 			Duration: time.Since(startTime) + delay,
 		}, nil
 	case <-time.After(4 * time.Second):
-		fmt.Printf("[break-debug] update_seen=false\n")
-		fmt.Printf("[break-debug] final_state=unknown\n")
+		c.debugActionf("break-debug", "update_seen=false")
+		c.debugActionf("break-debug", "final_state=unknown")
 		return BreakResult{}, ErrBlockUpdateTimeout
 	}
 }

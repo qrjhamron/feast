@@ -2,10 +2,10 @@ package feast
 
 import (
 	"fmt"
-	"log"
 	"sync/atomic"
 	"time"
 
+	"github.com/qrjhamron/feast/pkg/nav/planner"
 	"github.com/qrjhamron/feast/pkg/protocol"
 	"github.com/qrjhamron/feast/pkg/protocol/consts"
 	"github.com/qrjhamron/feast/pkg/state"
@@ -70,7 +70,7 @@ func (c *Client) registerStateHandlers() {
 		c.positionSynced = true
 		c.stateMu.Unlock()
 		if firstSync {
-			log.Printf("[pos] synced x=%.3f y=%.3f z=%.3f", x, y, z)
+			c.debugActionf("pos", "synced x=%.3f y=%.3f z=%.3f", x, y, z)
 		}
 		c.statsMu.Lock()
 		c.stats.LastPositionSyncAt = time.Now()
@@ -299,6 +299,54 @@ func (c *Client) registerStateHandlers() {
 		}
 		c.entities.UpdateVelocity(ev.EntityID, ev.VelocityX, ev.VelocityY, ev.VelocityZ)
 	})
+	c.bus.On("respawn", func(e state.Event) {
+		ev, ok := e.(state.RespawnEvent)
+		if !ok {
+			return
+		}
+		c.handleRespawn(ev)
+	})
+}
+
+// handleRespawn resets world/entity/position state after a clientbound Respawn
+// (a death respawn or dimension change). Everything tied to the old world is
+// dropped so stale terrain, block entities, or entities are never served after
+// the switch, while stable connection identity (username/UUID/entity id) and
+// inventory are preserved — the server re-sends authoritative inventory and a
+// new position sync, after which the bot becomes ready again.
+//
+// It runs on the read-loop goroutine (synchronously from the dispatcher), so it
+// must not block: StopNavigation only cancels a context, and the world/entity
+// resets are non-blocking. It never disconnects.
+func (c *Client) handleRespawn(ev state.RespawnEvent) {
+	// Cancel any in-flight navigation: the path was planned against terrain that
+	// no longer exists. The nav goroutine observes the cancelled context and
+	// unwinds on its own; we do not wait for it here, avoiding any deadlock when
+	// the respawn arrives mid-action.
+	c.StopNavigation()
+
+	// Drop the old world (clears chunks and their block entities) and any tracked
+	// non-local entities.
+	if c.world != nil {
+		c.world.Reset()
+	}
+	if c.entities != nil {
+		c.entities.Reset()
+	}
+
+	// Invalidate the flat A* path cache. HPA* clusters are rebuilt from world
+	// data and re-marked dirty as fresh chunks load after the respawn, so they
+	// self-heal; we bump the invalidation counter so that staleness is observable.
+	planner.InvalidateCache()
+	atomic.AddInt32(&c.hpaInvalidations, 1)
+
+	// Mark position unsynced: the bot is not ready until the server sends the
+	// post-respawn position sync, which the "position" handler will apply.
+	c.stateMu.Lock()
+	c.positionSynced = false
+	c.stateMu.Unlock()
+
+	c.debugActionf("respawn", "dimension=%s reset world+entities, awaiting position sync", ev.DimensionName)
 }
 
 func (c *Client) applyWorldBlockUpdate(x, y, z int, stateID int32) bool {
