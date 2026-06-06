@@ -1,6 +1,7 @@
 package feast
 
 import (
+	"fmt"
 	"log"
 	"sync/atomic"
 	"time"
@@ -105,14 +106,57 @@ func (c *Client) registerStateHandlers() {
 		if !ok {
 			return
 		}
-		c.trackInventorySlot(ev.Slot, ev.Item)
+		if ev.WindowID == 0 {
+			c.trackInventorySlot(ev.Slot, ev.Item)
+		} else {
+			c.trackContainerSlot(ev.WindowID, ev.Slot, ev.Item)
+		}
+		c.trackContainerStateID(ev.WindowID, ev.StateID)
 	})
 	c.bus.On("container_content", func(e state.Event) {
 		ev, ok := e.(state.ContainerContentEvent)
 		if !ok {
 			return
 		}
-		c.trackContainerContent(ev.WindowID, ev.Slots)
+		if ev.WindowID == 0 {
+			c.trackContainerContent(ev.WindowID, ev.Slots)
+		} else {
+			c.trackContainerContentNonZero(ev.WindowID, ev.Slots)
+		}
+		c.trackContainerStateID(ev.WindowID, ev.StateID)
+	})
+	c.bus.On("open_screen", func(e state.Event) {
+		ev, ok := e.(state.OpenScreenEvent)
+		if !ok {
+			return
+		}
+		c.containerMu.Lock()
+		typeName := "chest"
+		if ev.WindowType >= 0 && ev.WindowType <= 5 {
+			typeName = "chest"
+		} else {
+			typeName = fmt.Sprintf("window_type_%d", ev.WindowType)
+		}
+		c.activeContainer = &Container{
+			ID:     ev.WindowID,
+			Type:   typeName,
+			Title:  ev.Title,
+			client: c,
+		}
+		c.containerMu.Unlock()
+	})
+	c.bus.On("close_container", func(e state.Event) {
+		ev, ok := e.(state.CloseContainerEvent)
+		if !ok {
+			return
+		}
+		c.containerMu.Lock()
+		if c.activeContainer != nil && byte(c.activeContainer.ID) == ev.WindowID {
+			c.activeContainer = nil
+		}
+		delete(c.containerSlots, int32(ev.WindowID))
+		delete(c.containerStateIDs, int32(ev.WindowID))
+		c.containerMu.Unlock()
 	})
 	c.bus.On("keep_alive", func(e state.Event) {
 		if _, ok := e.(state.KeepAliveEvent); !ok {

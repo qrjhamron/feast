@@ -141,7 +141,7 @@ func (c *Client) NavigateTo2(x, y, z int) error {
 							if wpRes.Status != planner.PlanNoPath && len(wpRes.Path) > 1 {
 								c.logNavPathFound(len(wpRes.Path))
 								execCtx, execCancel := context.WithCancel(ctx)
-								err = executor.Execute(execCtx, newNavEventingClient(c), c.world, wpGoal, wpRes.Path)
+								err = executor.Execute(execCtx, newNavEventingClient(c), c.world, wpGoal, wpRes.Path, c.ActiveOptions())
 								execCancel()
 								if err != nil && execCtx.Err() == nil {
 									c.logNavFailed(fmt.Sprintf("executor_error:%v", err))
@@ -192,7 +192,7 @@ func (c *Client) NavigateTo2(x, y, z int) error {
 					c.logNavPathFound(len(res.Path))
 					path := res.Path
 					execCtx, execCancel := context.WithCancel(ctx)
-					err = executor.Execute(execCtx, newNavEventingClient(c), c.world, g, path)
+					err = executor.Execute(execCtx, newNavEventingClient(c), c.world, g, path, c.ActiveOptions())
 					execCancel()
 					if err != nil && execCtx.Err() == nil {
 						c.logNavFailed(fmt.Sprintf("executor_error:%v", err))
@@ -284,7 +284,7 @@ func (c *Client) NavigateTo2(x, y, z int) error {
 				}
 			}()
 
-			err := executor.Execute(execCtx, newNavEventingClient(c), c.world, g, path)
+			err := executor.Execute(execCtx, newNavEventingClient(c), c.world, g, path, c.ActiveOptions())
 			execCancel()
 			c.bus.Off(blockUpdateHandlerID)
 			c.bus.Off(sectionUpdateHandlerID)
@@ -657,6 +657,16 @@ func (n *navEventingClient) GetPosition() (x, y, z float64, yaw, pitch float32) 
 }
 
 func (n *navEventingClient) EntityID() int32 { return n.c.EntityID() }
+
+func (n *navEventingClient) TrackMovementStats(stats executor.MovementStats) {
+	n.c.statsTrackMu.Lock()
+	n.c.lastMovementStats = stats
+	n.c.statsTrackMu.Unlock()
+}
+
+func (n *navEventingClient) PositionSyncSeq() uint64 {
+	return n.c.PositionSyncSeq()
+}
 
 func (n *navEventingClient) WritePacket(p protocol.Packet) error {
 	if pkt, ok := p.(*protocol.PlayServerboundSetPlayerPositionAndRotationPacket); ok {

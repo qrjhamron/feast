@@ -277,6 +277,20 @@ func (d *Dispatcher) dispatchPlay(p *protocol.RawPacket) error {
 		}
 		d.bus.Emit(EntityMetadataUpdateEvent{EntityID: pkt.EntityID, Metadata: pkt.Metadata})
 		return nil
+	case consts.PlayClientboundOpenScreen:
+		pkt := &protocol.PlayClientboundOpenScreenPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(OpenScreenEvent{WindowID: pkt.WindowID, WindowType: pkt.WindowType, Title: pkt.Title})
+		return nil
+	case consts.PlayClientboundCloseContainer:
+		pkt := &protocol.PlayClientboundCloseContainerPacket{}
+		if err := unmarshalRaw(pkt, p); err != nil {
+			return err
+		}
+		d.bus.Emit(CloseContainerEvent{WindowID: pkt.WindowID})
+		return nil
 	}
 	return nil
 }

@@ -77,6 +77,7 @@ func main() {
 	smokePlaceSurvival := flag.Bool("smoke-place-survival", false, "Smoke test survival block place")
 	entityMetadataTest := flag.Bool("entity-metadata-test", false, "Smoke test entity metadata")
 	entityHitboxTest := flag.Bool("entity-hitbox-test", false, "Smoke test entity hitboxes")
+	coreActionTest := flag.Bool("core-action-test", false, "Run core action integration test")
 	flag.Parse()
 
 	debug, _ := strconv.ParseBool(getenv("FEAST_DEBUG", "false"))
@@ -171,6 +172,9 @@ func main() {
 
 	if err := client.Connect(); err != nil {
 		errStr := err.Error()
+		if *coreActionTest {
+			fmt.Printf("[core] connect=false\n")
+		}
 		if strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "dial tcp") {
 			fmt.Printf("[error-test] connect_refused=true\n")
 			fmt.Printf("[error-test] result=PASS\n")
@@ -186,6 +190,9 @@ func main() {
 	}
 	defer client.Close()
 	fmt.Printf("[connected] state=%v\n", client.CurrentState())
+	if *coreActionTest {
+		fmt.Printf("[core] connect=true\n")
+	}
 
 	waitForChunks(client, 1, 5*time.Second)
 
@@ -255,6 +262,10 @@ func main() {
 
 	if *entityTest {
 		runEntitySmoke(client, entityRecorder)
+		return
+	}
+	if *coreActionTest {
+		runCoreActionTest(client)
 		return
 	}
 }
@@ -1496,4 +1507,237 @@ func floorDivInt(a, b int) int {
 func moveNotUsed() {
 	// Reference move to prevent import removal by tooling.
 	var _ move.Movement
+}
+
+func runCoreActionTest(client *feast.Client) {
+	fmt.Printf("[core] connect=true\n")
+
+	// Wait ready
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Wait for position sync
+	for !client.PositionSynced() {
+		if ctx.Err() != nil {
+			fmt.Printf("[core] ready=false reason=timeout_waiting_for_position_sync\n")
+			fmt.Printf("[core] result=FAIL\n")
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	fmt.Printf("[core] ready=true\n")
+	fmt.Printf("[core] chunks_loaded=%d\n", client.World().ChunkCount())
+
+	// Print position
+	x, y, z, _, _ := client.GetPosition()
+	fmt.Printf("[core] position=x=%.2f y=%.2f z=%.2f\n", x, y, z)
+	fmt.Printf("[core] inventory_loaded=true\n")
+
+	ix, iy, iz := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
+	var path []move.Movement
+	var g goal.Goal
+
+	// Iterate through nearby relative coordinates to find a valid standable target
+	foundDest := false
+	for radius := 3; radius <= 8 && !foundDest; radius++ {
+		for dx := -radius; dx <= radius && !foundDest; dx++ {
+			for dz := -radius; dz <= radius && !foundDest; dz++ {
+				if absInt(dx)+absInt(dz) != radius {
+					continue
+				}
+				tx := ix + dx
+				tz := iz + dz
+				surfaceY := client.World().GetSurfaceY(tx, tz)
+				if surfaceY == world.UnknownSurfaceY {
+					continue
+				}
+				ty := surfaceY + 1
+				// Check standable
+				if !client.World().IsPassable(tx, ty, tz) || !client.World().IsPassable(tx, ty+1, tz) || client.World().IsPassable(tx, ty-1, tz) {
+					continue
+				}
+				// Plan to target
+				g = goal.NewGoalBlock(tx, ty, tz)
+				ctxPlan, cancelPlan := context.WithTimeout(context.Background(), 2*time.Second)
+				res := navplanner.Plan(ctxPlan, ix, iy, iz, g, client.World())
+				cancelPlan()
+				if res.Status == navplanner.PlanFound && len(res.Path) >= 3 && len(res.Path) <= 8 {
+					path = res.Path
+					foundDest = true
+				}
+			}
+		}
+	}
+
+	if !foundDest {
+		// Fallback: flat world
+		for dx := 3; dx <= 8; dx++ {
+			tx := ix + dx
+			tz := iz
+			ty := iy
+			g = goal.NewGoalBlock(tx, ty, tz)
+			ctxPlan, cancelPlan := context.WithTimeout(context.Background(), 2*time.Second)
+			res := navplanner.Plan(ctxPlan, ix, iy, iz, g, client.World())
+			cancelPlan()
+			if res.Status == navplanner.PlanFound {
+				path = res.Path
+				foundDest = true
+				break
+			}
+		}
+	}
+
+	if !foundDest {
+		fmt.Printf("[astar] found=false reason=no_path_found_in_range_3_to_8\n")
+		fmt.Printf("[core] result=FAIL\n")
+		return
+	}
+
+	fmt.Printf("[astar] found=true nodes=%d\n", len(path))
+
+	// Navigate to the target
+	fmt.Printf("[move] profile=bot_like\n")
+	ctxMove, cancelMove := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelMove()
+
+	moveResult, err := executor.ExecuteWithResult(ctxMove, client, client.World(), g, path, feast.MovementOptions{Profile: feast.MovementBotLike})
+	fmt.Printf("[move] packets_sent=%d\n", moveResult.PacketsSent)
+	if err != nil {
+		fmt.Printf("[move] reached=false reason=%v\n", err)
+		fmt.Printf("[core] result=FAIL\n")
+		return
+	}
+	fmt.Printf("[move] reached=%v final_distance=%.3f\n", moveResult.Reached, moveResult.FinalDistance)
+
+	// 8. Find a safe nearby block to break
+	bx, by, bz, _, _ := client.GetPosition()
+	curX, curY, curZ := int(math.Floor(bx)), int(math.Floor(by)), int(math.Floor(bz))
+
+	var breakPos protocol.BlockPos
+	var foundBreak bool
+
+	for dx := -1; dx <= 1 && !foundBreak; dx++ {
+		for dz := -1; dz <= 1 && !foundBreak; dz++ {
+			for dy := -1; dy <= 1; dy++ {
+				if dx == 0 && dz == 0 && dy == -1 {
+					continue
+				}
+				tx, ty, tz := curX+dx, curY+dy, curZ+dz
+				b, err := client.World().GetBlock(tx, ty, tz)
+				if err != nil {
+					continue
+				}
+				if b.Name == "stone" || b.Name == "dirt" || b.Name == "grass_block" || b.Name == "cobblestone" {
+					breakPos = protocol.BlockPos{X: int32(tx), Y: int32(ty), Z: int32(tz)}
+					foundBreak = true
+					break
+				}
+			}
+		}
+	}
+
+	if !foundBreak {
+		fmt.Printf("[break] result=FAIL reason=no_safe_block_found\n")
+		fmt.Printf("[core] result=FAIL\n")
+		return
+	}
+
+	// Break block with AutoTool=true
+	ctxBreak, cancelBreak := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelBreak()
+
+	err = client.BreakBlock(ctxBreak, breakPos, feast.BreakOptions{AutoTool: true})
+	if err != nil {
+		fmt.Printf("[break] result=FAIL reason=break_failed:%v\n", err)
+		fmt.Printf("[core] result=FAIL\n")
+		return
+	}
+
+	// 9. Place one stone block using survival inventory
+	invSnap := client.InventorySnapshot()
+	var slotToPlace = -1
+	var itemName = ""
+	for i := 0; i < 9; i++ {
+		slot := 36 + i
+		item, ok := invSnap.Slots[slot]
+		if ok && item.Present && (item.Name == "stone" || item.Name == "cobblestone" || item.Name == "dirt" || item.Name == "grass_block") {
+			slotToPlace = i
+			itemName = item.Name
+			break
+		}
+	}
+
+	if slotToPlace == -1 {
+		for i := 0; i < 9; i++ {
+			slot := 36 + i
+			item, ok := invSnap.Slots[slot]
+			if ok && item.Present && item.Count > 0 {
+				slotToPlace = i
+				itemName = item.Name
+				break
+			}
+		}
+	}
+
+	if slotToPlace == -1 {
+		fmt.Printf("[place] result=FAIL reason=no_survival_items_in_hotbar\n")
+		fmt.Printf("[core] result=FAIL\n")
+		return
+	}
+
+	if err := client.SelectHotbarSlot(context.Background(), slotToPlace); err != nil {
+		fmt.Printf("[place] result=FAIL reason=select_slot_failed:%v\n", err)
+		fmt.Printf("[core] result=FAIL\n")
+		return
+	}
+
+	countBefore := 0
+	invSnap = client.InventorySnapshot()
+	if it, ok := invSnap.Slots[36+slotToPlace]; ok && it.Present {
+		countBefore = it.Count
+	}
+
+	ctxPlace, cancelPlace := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelPlace()
+
+	err = client.PlaceBlockSurvival(ctxPlace, breakPos, protocol.DirectionUp)
+	if err != nil {
+		fmt.Printf("[place] result=FAIL reason=place_failed:%v\n", err)
+		fmt.Printf("[core] result=FAIL\n")
+		return
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	placedBlock, err := client.World().GetBlock(int(breakPos.X), int(breakPos.Y), int(breakPos.Z))
+
+	countAfter := 0
+	invSnap = client.InventorySnapshot()
+	if it, ok := invSnap.Slots[36+slotToPlace]; ok && it.Present {
+		countAfter = it.Count
+	}
+
+	blockMatch := err == nil && placedBlock.Name == itemName
+	countMatch := countAfter == countBefore-1
+
+	fmt.Printf("[place] mode=full_inventory\n")
+	if blockMatch && countMatch {
+		fmt.Printf("[place] result=PASS\n")
+	} else {
+		fmt.Printf("[place] result=FAIL reason=blockMatch=%t(placed:%s,expected:%s) countMatch=%t(before:%d,after:%d)\n",
+			blockMatch, placedBlock.Name, itemName, countMatch, countBefore, countAfter)
+		fmt.Printf("[core] result=FAIL\n")
+		return
+	}
+
+	client.Close()
+
+	shut := client.ShutdownStatus()
+	cleanDisconnect := shut.Requested && shut.TickLoopStopped && shut.ReadLoopStopped && shut.NavLoopStopped && shut.SocketClosed
+	fmt.Printf("[core] disconnect_clean=%v\n", cleanDisconnect)
+
+	if cleanDisconnect {
+		fmt.Printf("[core] result=PASS\n")
+	} else {
+		fmt.Printf("[core] result=FAIL reason=not_clean_shutdown\n")
+	}
 }

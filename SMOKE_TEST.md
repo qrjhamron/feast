@@ -9,8 +9,8 @@ against a local Minecraft server.
 
 ## Prerequisites
 
-1.  **Minecraft Server**: Download Paper or a vanilla Minecraft server for version 1.20.4.
-2.  **Configuration**: In `server.properties`, set `online-mode=false` and ensure `server-port=25565`. Start the server.
+1.  **Minecraft Server**: Download Paper 1.20.4 or a vanilla Minecraft server for version 1.20.4. Current real-world validation was run on Paper 1.20.4 protocol 765.
+2.  **Configuration**: In `server.properties`, set `online-mode=false`, `spawn-protection=0`, `difficulty=peaceful`, `gamemode=survival`, `enable-command-block=false`, `view-distance=10`, `simulation-distance=10`, and `server-port=25565`. Start the server.
 3.  **Command Execution Location**: Run all commands from the repository root `/root/feastgo`.
 
 ## Quick Run (all modes)
@@ -51,7 +51,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 3. Block Search
 Search for the nearest `grass_block` relative to the bot:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --find-block grass_block
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --find-block grass_block
 ```
 **Expected Output**:
 ```
@@ -61,7 +61,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 4. HPA Pathfinding Test
 Verify Hierarchical Pathfinding A* (HPA*) abstract graph construction, cluster manager loading, entrance node creation, optimistic/refined local planning, and abstract path verification:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --hpa-test
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --hpa-test
 ```
 **Expected Output**:
 ```
@@ -74,7 +74,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 5. Block Placement (Creative Smoke Mode)
 Test placing a block (creative smoke mode) at a valid coordinate, ensuring hitbox overlap checks, support blocks check, packet transmission, and block update confirmation:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-place-block
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --smoke-place-block
 ```
 **Expected Output**:
 ```
@@ -94,7 +94,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 6. Invalid Block Placement
 Verify that invalid placement (e.g. overlapping player hitbox) is correctly caught and rejected with a clean error instead of panicking:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-place-block-invalid
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --smoke-place-block-invalid
 ```
 **Expected Output**:
 ```
@@ -104,7 +104,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 7. Block Breaking
 Test breaking a block (start/finish destroy action), waiting for block update confirmation, and checking if the block state successfully updates to `air`:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-break-block
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --smoke-break-block
 ```
 **Expected Output**:
 ```
@@ -121,7 +121,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 8. World Mutations and Consistency
 Execute a combined mutation sequence (join -> place stone -> verify place -> break stone -> verify air -> verify passable -> verify HPA invalidations):
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-world-mutate
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --smoke-world-mutate
 ```
 **Expected Output**:
 ```
@@ -136,7 +136,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 9. HPA Under Mutation
 Verify HPA stats, place block, verify HPA invalidation, break block, verify HPA invalidation, and ensure paths can still be planned/refined:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --hpa-mutation-test
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --hpa-mutation-test
 ```
 **Expected Output**:
 ```
@@ -144,13 +144,15 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 [hpa-mutation] invalidation_after_place=true
 [hpa-mutation] break_block=true
 [hpa-mutation] invalidation_after_break=true
-[hpa-mutation] result=PASS
+[hpa-mutation] result=PASS reason=invalidation_verified
 ```
+
+If `abstract_path_found=true` and `refined_segments>0=true`, route after mutation was also proven. Otherwise `reason=invalidation_verified` means only HPA invalidation was proven.
 
 ### 10. Stability Soak Test
 Run a stability soak test (e.g. 60 seconds) to ensure KeepAlives are handled, no loop crashes occur, and the client disconnects cleanly:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --soak 60s
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --soak 60s
 ```
 **Expected Output**:
 ```
@@ -165,7 +167,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 11. Connection Refusal (Server Unavailable)
 Verify that attempting to connect to a offline/dead port terminates cleanly with a refusal error:
 ```sh
-MC_HOST=127.0.0.1 MC_PORT=25566 go run ./cmd/bot --smoke-world
+MC_HOST=127.0.0.1 MC_PORT=25566 go run ./cmd/smoke --smoke-world
 ```
 **Expected Output**:
 ```
@@ -176,7 +178,7 @@ MC_HOST=127.0.0.1 MC_PORT=25566 go run ./cmd/bot --smoke-world
 ### 12. Inventory Dump
 Dump the player's inventory to verify hotbar, selection, and container slots:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --inventory-dump
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --inventory-dump
 ```
 **Expected Output**:
 ```
@@ -189,7 +191,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 13. Survival Block Placement
 Test placing a block in survival mode, verifying real inventory decrement and server block update confirmation:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --smoke-place-survival
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --smoke-place-survival
 ```
 **Expected Output**:
 ```
@@ -212,7 +214,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 14. Entity Metadata Decoding
 Test decoding 1.20.4 entity metadata fields:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --entity-metadata-test
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --entity-metadata-test
 ```
 **Expected Output**:
 ```
@@ -228,7 +230,7 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 ### 15. Entity Hitbox system
 Verify the calculation of hitboxes and collision detection querying:
 ```sh
-FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/bot --entity-hitbox-test
+FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./cmd/smoke --entity-hitbox-test
 ```
 **Expected Output**:
 ```
@@ -239,4 +241,3 @@ FEAST_DEBUG=true MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run .
 [hitbox] collision_detected=...
 [hitbox] result=PASS
 ```
-

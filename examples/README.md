@@ -27,6 +27,7 @@ go run ./examples/basic_join
 | [place_block_survival](./place_block_survival/) | PlaceBlockSurvival |
 | [entity_events](./entity_events/) | OnEntitySpawn, OnEntityMove, OnEntityRemove |
 | [avoid_entities](./avoid_entities/) | Entities().Nearby() for proximity check |
+| [public_api_validation](./public_api_validation/) | End-to-end public API validation against a real server |
 
 ## Prerequisites
 

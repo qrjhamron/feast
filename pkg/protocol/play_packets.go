@@ -1008,6 +1008,110 @@ func (p *PlayClientboundSetContainerSlotPacket) Unmarshal(r *Reader) error {
 	return err
 }
 
+type ClickContainerChangedSlot struct {
+	Slot int16
+	Item ItemStack
+}
+
+// PlayServerboundClickContainerPacket is Click Container (0x0D) for Protocol 765.
+type PlayServerboundClickContainerPacket struct {
+	WindowID     byte
+	StateID      int32
+	Slot         int16
+	Button       byte
+	Mode         int32
+	ChangedSlots []ClickContainerChangedSlot
+	CarriedItem  ItemStack
+}
+
+func (p *PlayServerboundClickContainerPacket) PacketID() int32 {
+	return consts.PlayServerboundClickContainer
+}
+
+func (p *PlayServerboundClickContainerPacket) Marshal(w *Writer) error {
+	if err := w.WriteByte(p.WindowID); err != nil {
+		return err
+	}
+	if err := w.WriteVarInt(p.StateID); err != nil {
+		return err
+	}
+	if err := w.WriteShort(p.Slot); err != nil {
+		return err
+	}
+	if err := w.WriteByte(p.Button); err != nil {
+		return err
+	}
+	if err := w.WriteVarInt(p.Mode); err != nil {
+		return err
+	}
+	if err := w.WriteVarInt(int32(len(p.ChangedSlots))); err != nil {
+		return err
+	}
+	for _, changed := range p.ChangedSlots {
+		if err := w.WriteShort(changed.Slot); err != nil {
+			return err
+		}
+		if err := changed.Item.Marshal(w); err != nil {
+			return err
+		}
+	}
+	return p.CarriedItem.Marshal(w)
+}
+
+func (p *PlayServerboundClickContainerPacket) Unmarshal(r *Reader) error {
+	windowID, err := r.ReadByte()
+	if err != nil {
+		return err
+	}
+	stateID, err := r.ReadVarInt()
+	if err != nil {
+		return err
+	}
+	slot, err := r.ReadShort()
+	if err != nil {
+		return err
+	}
+	button, err := r.ReadByte()
+	if err != nil {
+		return err
+	}
+	mode, err := r.ReadVarInt()
+	if err != nil {
+		return err
+	}
+	changedCount, err := r.ReadVarInt()
+	if err != nil {
+		return err
+	}
+	if changedCount < 0 || changedCount > 128 {
+		return fmt.Errorf("invalid changed slots count: %d", changedCount)
+	}
+	changed := make([]ClickContainerChangedSlot, 0, changedCount)
+	for i := int32(0); i < changedCount; i++ {
+		changedSlot, err := r.ReadShort()
+		if err != nil {
+			return err
+		}
+		item, err := ReadItemStack(r)
+		if err != nil {
+			return err
+		}
+		changed = append(changed, ClickContainerChangedSlot{Slot: changedSlot, Item: item})
+	}
+	carried, err := ReadItemStack(r)
+	if err != nil {
+		return err
+	}
+	p.WindowID = windowID
+	p.StateID = stateID
+	p.Slot = slot
+	p.Button = button
+	p.Mode = mode
+	p.ChangedSlots = changed
+	p.CarriedItem = carried
+	return nil
+}
+
 // PlayClientboundSetHeldItemPacket is Set Held Item (0x51).
 type PlayClientboundSetHeldItemPacket struct {
 	Slot byte
@@ -2381,4 +2485,69 @@ func readVarLong(r *Reader) (int64, error) {
 		}
 	}
 	return value, nil
+}
+
+// PlayClientboundOpenScreenPacket is Open Screen (0x31).
+type PlayClientboundOpenScreenPacket struct {
+	WindowID   int32
+	WindowType int32
+	Title      string
+}
+
+func (p *PlayClientboundOpenScreenPacket) PacketID() int32 {
+	return consts.PlayClientboundOpenScreen
+}
+func (p *PlayClientboundOpenScreenPacket) Marshal(w *Writer) error {
+	if err := w.WriteVarInt(p.WindowID); err != nil {
+		return err
+	}
+	if err := w.WriteVarInt(p.WindowType); err != nil {
+		return err
+	}
+	return w.WriteString(p.Title)
+}
+func (p *PlayClientboundOpenScreenPacket) Unmarshal(r *Reader) error {
+	var err error
+	if p.WindowID, err = r.ReadVarInt(); err != nil {
+		return err
+	}
+	if p.WindowType, err = r.ReadVarInt(); err != nil {
+		return err
+	}
+	p.Title, err = r.ReadString()
+	return err
+}
+
+// PlayClientboundCloseContainerPacket is Close Container (clientbound) (0x12).
+type PlayClientboundCloseContainerPacket struct {
+	WindowID byte
+}
+
+func (p *PlayClientboundCloseContainerPacket) PacketID() int32 {
+	return consts.PlayClientboundCloseContainer
+}
+func (p *PlayClientboundCloseContainerPacket) Marshal(w *Writer) error {
+	return w.WriteByte(p.WindowID)
+}
+func (p *PlayClientboundCloseContainerPacket) Unmarshal(r *Reader) error {
+	var err error
+	p.WindowID, err = r.ReadByte()
+	return err
+}
+
+// PlayServerboundCloseContainerPacket is Close Container (serverbound) (0x0E).
+type PlayServerboundCloseContainerPacket struct {
+	WindowID byte
+}
+
+func (p *PlayServerboundCloseContainerPacket) PacketID() int32 {
+	return consts.PlayServerboundCloseContainer
+}
+func (p *PlayServerboundCloseContainerPacket) Marshal(w *Writer) error {
+	return w.WriteByte(p.WindowID)
+}
+func (p *PlayServerboundCloseContainerPacket) Unmarshal(r *Reader) error {
+	var err error
+	p.WindowID, err = r.ReadByte()
+	return err
 }

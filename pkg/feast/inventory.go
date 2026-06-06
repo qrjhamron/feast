@@ -4,15 +4,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync/atomic"
 	"time"
 
 	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/registry"
 	"github.com/qrjhamron/feast/pkg/state"
 	"github.com/qrjhamron/feast/pkg/world"
 )
 
-var ErrHeldItemUnknown = errors.New("held item unknown")
+var (
+	ErrHeldItemUnknown     = errors.New("held item unknown")
+	ErrChunkNotLoaded      = world.ErrChunkNotLoaded
+	ErrBlockNotReplaceable = errors.New("block not replaceable")
+	ErrNoSupportBlock      = errors.New("no support block")
+	ErrTargetOutOfReach    = errors.New("target out of reach")
+	ErrNoPlaceableBlock    = errors.New("no placeable block")
+	ErrPlacementRolledBack = errors.New("placement rolled back")
+	ErrBlockUpdateTimeout  = errors.New("block update timeout")
+	ErrBlockAir            = errors.New("block is air")
+	ErrBlockUnbreakable    = errors.New("block unbreakable")
+	ErrBreakTargetUnsafe   = errors.New("break target unsafe")
+	ErrBreakOutOfReach     = errors.New("break target out of reach")
+	ErrBreakRolledBack     = errors.New("break rolled back")
+)
 
 const (
 	playerInventoryHotbarStart int16 = 36
@@ -23,14 +39,7 @@ const (
 	CreativeSmokeItemID   = int32(1)
 )
 
-type ItemStack struct {
-	Present bool
-	ItemID  int32
-	Name    string
-	Count   int
-	NBT     []byte
-	Source  string // for compatibility
-}
+type ItemStack = registry.ItemStack
 
 type InventoryState struct {
 	SelectedHotbarSlot int
@@ -214,16 +223,7 @@ func (c *Client) checkPlacementValidity(target protocol.BlockPos) error {
 	if c.world == nil {
 		return world.ErrBlockNotFound
 	}
-	cx := int(target.X) >> 4
-	cz := int(target.Z) >> 4
-	if !c.world.HasChunk(cx, cz) {
-		return fmt.Errorf("chunk at (%d, %d) is not loaded", cx, cz)
-	}
-	_, err := c.world.GetBlock(int(target.X), int(target.Y), int(target.Z))
-	if err != nil {
-		return err
-	}
-	return nil
+	return c.world.RequireBlockLoaded(world.BlockPos(target))
 }
 
 func (c *Client) PlaceBlock(target protocol.BlockPos, face byte) error {
@@ -253,6 +253,40 @@ func (c *Client) PlaceBlock(target protocol.BlockPos, face byte) error {
 	})
 }
 
+func (c *Client) requireCoreActionReady() error {
+	if c.conn == nil {
+		return fmt.Errorf("client not connected")
+	}
+	if c.CurrentState() != state.StatePlay {
+		return fmt.Errorf("client not ready: state=%v", c.CurrentState())
+	}
+	if !c.PositionSynced() {
+		return fmt.Errorf("position not synced")
+	}
+	return nil
+}
+
+func (c *Client) blockCenterDistance(pos protocol.BlockPos) float64 {
+	c.stateMu.RLock()
+	px, py, pz := c.player.X, c.player.Y, c.player.Z
+	c.stateMu.RUnlock()
+	dx := float64(pos.X) + 0.5 - px
+	dy := float64(pos.Y) + 0.5 - py
+	dz := float64(pos.Z) + 0.5 - pz
+	return math.Sqrt(dx*dx + dy*dy + dz*dz)
+}
+
+func blockAABB(pos protocol.BlockPos) world.AABB {
+	return world.AABB{
+		MinX: float64(pos.X),
+		MinY: float64(pos.Y),
+		MinZ: float64(pos.Z),
+		MaxX: float64(pos.X) + 1,
+		MaxY: float64(pos.Y) + 1,
+		MaxZ: float64(pos.Z) + 1,
+	}
+}
+
 func directionOffset(dir protocol.Direction) (dx, dy, dz int32) {
 	switch dir {
 	case protocol.DirectionDown:
@@ -274,6 +308,9 @@ func directionOffset(dir protocol.Direction) (dx, dy, dz int32) {
 
 // PlaceBlockSurvivalInternal executes survival mode placement.
 func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol.BlockPos, face protocol.Direction) error {
+	if err := c.requireCoreActionReady(); err != nil {
+		return err
+	}
 	c.inventoryMu.RLock()
 	selectedSlot := c.inventory.SelectedHotbarSlot
 	heldSlot := 36 + selectedSlot
@@ -295,7 +332,7 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 
 		if foundSlot == -1 {
 			fmt.Printf("[place-survival] result=FAIL reason=no_placeable_block_in_hotbar\n")
-			return fmt.Errorf("no placeable block in hotbar")
+			return ErrNoPlaceableBlock
 		}
 
 		if err := c.SelectHotbarSlot(ctx, foundSlot); err != nil {
@@ -339,6 +376,10 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 		fmt.Printf("[place-survival] result=FAIL reason=chunk_not_loaded_or_invalid\n")
 		return err
 	}
+	if c.blockCenterDistance(target) > 6.0 {
+		fmt.Printf("[place-survival] result=FAIL reason=target_out_of_reach\n")
+		return ErrTargetOutOfReach
+	}
 
 	oldState, err := c.world.GetBlock(int(target.X), int(target.Y), int(target.Z))
 	if err != nil {
@@ -346,27 +387,36 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 		return err
 	}
 	fmt.Printf("[place-survival] old_state=%s\n", oldState.Name)
-	if oldState.Name != "air" {
-		fmt.Printf("[place-survival] result=FAIL reason=target_not_air\n")
-		return fmt.Errorf("target block is not air: %s", oldState.Name)
+	if !c.world.IsReplaceable(world.BlockPos(target)) {
+		fmt.Printf("[place-survival] result=FAIL reason=target_not_replaceable\n")
+		return ErrBlockNotReplaceable
 	}
 
+	if err := c.world.RequireBlockLoaded(world.BlockPos(support)); err != nil {
+		fmt.Printf("[place-survival] result=FAIL reason=support_chunk_not_loaded\n")
+		return err
+	}
 	supportState, err := c.world.GetBlock(int(support.X), int(support.Y), int(support.Z))
 	if err != nil {
 		fmt.Printf("[place-survival] result=FAIL reason=support_block_not_found\n")
 		return err
 	}
-	if !supportState.Solid {
+	if !c.world.IsSolid(world.BlockPos(support)) {
 		fmt.Printf("[place-survival] result=FAIL reason=support_block_not_solid\n")
-		return fmt.Errorf("support block is not solid: %s", supportState.Name)
+		return fmt.Errorf("%w: %s", ErrNoSupportBlock, supportState.Name)
 	}
 
 	if c.OverlapsPlayer(target) {
 		fmt.Printf("[place-survival] result=FAIL reason=overlaps_player_hitbox\n")
 		return fmt.Errorf("placement target overlaps player hitbox")
 	}
+	if c.world.IsEntityBlocking(blockAABB(target)) {
+		fmt.Printf("[place-survival] result=FAIL reason=overlaps_entity_hitbox\n")
+		return fmt.Errorf("placement target overlaps blocking entity hitbox")
+	}
 
 	updateCh := make(chan state.BlockUpdateEvent, 16)
+	slotCh := make(chan state.InventorySlotEvent, 4)
 	blockHandlerID, _ := c.On("block_update", func(e state.Event) {
 		if ev, ok := e.(state.BlockUpdateEvent); ok {
 			select {
@@ -387,8 +437,17 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 			}
 		}
 	})
+	slotHandlerID, _ := c.On("inventory_slot", func(e state.Event) {
+		if ev, ok := e.(state.InventorySlotEvent); ok && ev.WindowID == 0 && int(ev.Slot) == heldSlot {
+			select {
+			case slotCh <- ev:
+			default:
+			}
+		}
+	})
 	defer c.Events().Off(blockHandlerID)
 	defer c.Events().Off(sectionHandlerID)
+	defer c.Events().Off(slotHandlerID)
 
 	seq := int32(atomic.AddInt32(&placementSequence, 1))
 	err = c.writePacket(&protocol.PlayServerboundUseItemOnPacket{
@@ -407,35 +466,35 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 		return err
 	}
 
-	var updateReceived bool
-	select {
-	case <-ctx.Done():
-		fmt.Printf("[place-survival] result=FAIL reason=context_cancelled\n")
-		return ctx.Err()
-	case <-time.After(5 * time.Second):
+	updateReceived := false
+	slotUpdateReceived := false
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for !updateReceived {
 		select {
-		case <-updateCh:
-			updateReceived = true
-		default:
-			updateReceived = false
-		}
-	case ev := <-updateCh:
-		if ev.X == target.X && ev.Y == target.Y && ev.Z == target.Z {
-			updateReceived = true
-		} else {
-			timeout := time.After(4 * time.Second)
-		loop:
-			for {
-				select {
-				case ev2 := <-updateCh:
-					if ev2.X == target.X && ev2.Y == target.Y && ev2.Z == target.Z {
-						updateReceived = true
-						break loop
-					}
-				case <-timeout:
-					break loop
-				}
+		case <-ctx.Done():
+			fmt.Printf("[place-survival] result=FAIL reason=context_cancelled\n")
+			return ctx.Err()
+		case <-deadline.C:
+			fmt.Printf("[place-survival] result=FAIL reason=block_update_timeout\n")
+			return ErrBlockUpdateTimeout
+		case ev := <-slotCh:
+			slotUpdateReceived = true
+			heldItem.Count = int(ev.Item.Count)
+		case ev := <-updateCh:
+			if ev.X == target.X && ev.Y == target.Y && ev.Z == target.Z {
+				updateReceived = true
 			}
+		}
+	}
+	drain := true
+	for drain {
+		select {
+		case ev := <-slotCh:
+			slotUpdateReceived = true
+			heldItem.Count = int(ev.Item.Count)
+		default:
+			drain = false
 		}
 	}
 
@@ -448,9 +507,8 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 	}
 	fmt.Printf("[place-survival] new_state=%s\n", newState.Name)
 
-	time.Sleep(500 * time.Millisecond)
-	finalState, err := c.world.GetBlock(int(target.X), int(target.Y), int(target.Z))
-	rollbackDetected := err == nil && finalState.Name == "air"
+	_, err = c.world.GetBlock(int(target.X), int(target.Y), int(target.Z))
+	rollbackDetected := err == nil && c.world.IsReplaceable(world.BlockPos(target))
 	fmt.Printf("[place-survival] rollback_detected=%v\n", rollbackDetected)
 
 	c.inventoryMu.RLock()
@@ -458,10 +516,14 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 	c.inventoryMu.RUnlock()
 	fmt.Printf("[place-survival] inventory_count_before=%d\n", countBefore)
 	fmt.Printf("[place-survival] inventory_count_after=%d\n", countAfter)
+	if slotUpdateReceived && countAfter >= countBefore {
+		fmt.Printf("[place-survival] result=FAIL reason=inventory_count_not_decremented\n")
+		return ErrPlacementRolledBack
+	}
 
-	if !updateReceived || newState.Name == "air" || rollbackDetected {
+	if c.world.IsReplaceable(world.BlockPos(target)) || rollbackDetected {
 		fmt.Printf("[place-survival] result=FAIL reason=rollback_or_no_update\n")
-		return fmt.Errorf("placement failed or was rolled back")
+		return ErrPlacementRolledBack
 	}
 
 	fmt.Printf("[place-survival] result=PASS\n")
@@ -534,38 +596,13 @@ func (c *Client) ExecuteCreativeSmokePlacement(plan PlacementPlan) error {
 }
 
 func ItemNameFromID(id int32) (string, bool) {
-	switch id {
-	case 0:
-		return "air", true
-	case 1:
-		return "stone", true
-	case 14:
-		return "grass_block", true
-	case 15:
-		return "dirt", true
-	case 22:
-		return "cobblestone", true
-	case 23:
-		return "oak_planks", true
-	default:
-		return fmt.Sprintf("item_%d", id), false
-	}
+	return registry.ItemNameFromID(id)
 }
 
 func BlockNameFromItem(item ItemStack) (string, bool) {
-	if !item.Present {
-		return "air", true
-	}
-	return ItemNameFromID(item.ItemID)
+	return registry.BlockNameFromItem(item)
 }
 
 func IsPlaceableBlockItem(item ItemStack) bool {
-	if !item.Present {
-		return false
-	}
-	name, ok := BlockNameFromItem(item)
-	if !ok || name == "air" {
-		return false
-	}
-	return true
+	return registry.IsPlaceableBlockItem(item)
 }

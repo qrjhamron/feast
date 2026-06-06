@@ -20,6 +20,9 @@ exposing a high-level API on top of a tested, Protocol-765-compliant transport s
 | Vanilla | Not tested |
 | Multi-version | Not supported |
 
+Latest real-world validation in this checkout used a local/private Paper
+1.20.4 server reporting protocol 765 with `online-mode=false`.
+
 ---
 
 ## Install
@@ -209,6 +212,12 @@ bash ./test/smoke/scripts/run_paper_smoke.sh
 
 Full flag list: `go run ./cmd/smoke --help`
 
+Public API validation runner:
+
+```bash
+MC_HOST=127.0.0.1 MC_PORT=25565 MC_USERNAME=FeastGoBot go run ./examples/public_api_validation
+```
+
 ---
 
 ## Examples
@@ -224,6 +233,7 @@ Full flag list: `go run ./cmd/smoke --help`
 | `examples/place_block_survival` | PlaceBlockSurvival |
 | `examples/entity_events` | OnEntitySpawn, OnEntityMove, OnEntityRemove |
 | `examples/avoid_entities` | Entities().Nearby() proximity scan |
+| `examples/public_api_validation` | End-to-end public API validation against a real server |
 
 ```bash
 MC_HOST=127.0.0.1 go run ./examples/basic_join

@@ -24,9 +24,11 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/qrjhamron/feast/pkg/nav/goal"
 	"github.com/qrjhamron/feast/pkg/protocol"
+	"github.com/qrjhamron/feast/pkg/registry"
 	"github.com/qrjhamron/feast/pkg/state"
 	"github.com/qrjhamron/feast/pkg/world"
 )
@@ -96,6 +98,8 @@ const (
 // It aliases protocol.BlockPos so library users need not import pkg/protocol.
 type BlockPos = protocol.BlockPos
 
+type Vec3 = world.Vec3
+
 // ─── Top-level constructors ───────────────────────────────────────────────────
 
 // Connect creates a new client with the given options, connects to the server,
@@ -140,13 +144,70 @@ func (c *Client) FindNearestBlock(name string, radius int) (world.BlockHit, bool
 	return c.world.FindNearestBlock(pos, name, radius)
 }
 
+func FindPlaceTargetNear(w *world.World, origin Vec3, blockName string, radius int) (target BlockPos, face Direction, ok bool) {
+	if w == nil || radius < 0 {
+		return BlockPos{}, FaceUp, false
+	}
+	ox := int(math.Floor(origin.X))
+	oy := int(math.Floor(origin.Y))
+	oz := int(math.Floor(origin.Z))
+	bestDist := math.Inf(1)
+	for dx := -radius; dx <= radius; dx++ {
+		for dy := -radius; dy <= radius; dy++ {
+			for dz := -radius; dz <= radius; dz++ {
+				cand := BlockPos{X: int32(ox + dx), Y: int32(oy + dy), Z: int32(oz + dz)}
+				if !w.IsBlockLoaded(world.BlockPos(cand)) || !w.IsReplaceable(world.BlockPos(cand)) {
+					continue
+				}
+				for _, support := range []struct {
+					face Direction
+					pos  BlockPos
+				}{
+					{FaceUp, BlockPos{X: cand.X, Y: cand.Y - 1, Z: cand.Z}},
+					{FaceDown, BlockPos{X: cand.X, Y: cand.Y + 1, Z: cand.Z}},
+					{FaceNorth, BlockPos{X: cand.X, Y: cand.Y, Z: cand.Z + 1}},
+					{FaceSouth, BlockPos{X: cand.X, Y: cand.Y, Z: cand.Z - 1}},
+					{FaceWest, BlockPos{X: cand.X + 1, Y: cand.Y, Z: cand.Z}},
+					{FaceEast, BlockPos{X: cand.X - 1, Y: cand.Y, Z: cand.Z}},
+				} {
+					if !w.IsBlockLoaded(world.BlockPos(support.pos)) || !w.IsSolid(world.BlockPos(support.pos)) {
+						continue
+					}
+					dist := math.Sqrt(float64(dx*dx + dy*dy + dz*dz))
+					if dist < bestDist {
+						bestDist = dist
+						target = cand
+						face = support.face
+						ok = true
+					}
+				}
+			}
+		}
+	}
+	return target, face, ok
+}
+
 // ─── Navigation ──────────────────────────────────────────────────────────────
 
 // NavigateTo navigates the bot to the given goal and blocks until the goal is
 // satisfied, navigation fails, or the context is cancelled.
 //
 // Use [goal.Block], [goal.XZ], [goal.Proximity], or [goal.NearEntity] to create a goal.
-func (c *Client) NavigateTo(ctx context.Context, g goal.Goal) error {
+func (c *Client) NavigateTo(ctx context.Context, g goal.Goal, opts ...MovementOptions) error {
+	profile := c.MovementProfile()
+	opt := MovementOptions{
+		Profile: profile,
+	}
+	if len(opts) > 0 {
+		opt = opts[0]
+		if opt.Profile == "" {
+			opt.Profile = profile
+		}
+	}
+	c.stateMu.Lock()
+	c.activeOptions = opt
+	c.stateMu.Unlock()
+
 	pos := c.Position()
 	x := int(math.Floor(pos.X))
 	z := int(math.Floor(pos.Z))
@@ -202,9 +263,108 @@ func (c *Client) navigateTo(x, y, z int) error {
 
 // ─── Block interaction ────────────────────────────────────────────────────────
 
+type BreakOptions struct {
+	AutoTool bool
+}
+
 // BreakBlock sends start+finish digging packets for the block at pos.
-// It does not wait for server confirmation; use [Client.OnBlockUpdate] to confirm.
-func (c *Client) BreakBlock(ctx context.Context, pos BlockPos) error {
+// If AutoTool option is set, it selects the best matching tool and waits for block update.
+func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var autoTool bool
+	for _, opt := range opts {
+		if opt.AutoTool {
+			autoTool = true
+		}
+	}
+
+	if err := c.requireCoreActionReady(); err != nil {
+		return err
+	}
+	if err := c.world.RequireBlockLoaded(world.BlockPos(pos)); err != nil {
+		return err
+	}
+	bx, by, bz, _, _ := c.GetPosition()
+	if c.blockCenterDistance(pos) > 6.0 {
+		return fmt.Errorf("%w (distance %.2f)", ErrBreakOutOfReach, c.blockCenterDistance(pos))
+	}
+
+	if pos.X == int32(math.Floor(bx)) && pos.Z == int32(math.Floor(bz)) && pos.Y == int32(math.Floor(by))-1 {
+		return ErrBreakTargetUnsafe
+	}
+
+	blockState, err := c.world.GetBlock(int(pos.X), int(pos.Y), int(pos.Z))
+	if err != nil {
+		return fmt.Errorf("failed to get block: %w", err)
+	}
+	if c.world.IsReplaceable(world.BlockPos(pos)) {
+		return ErrBlockAir
+	}
+	if blockState.Name == "bedrock" || blockState.Name == "barrier" {
+		return fmt.Errorf("%w: %s", ErrBlockUnbreakable, blockState.Name)
+	}
+
+	blockName := blockState.Name
+	fmt.Printf("[break] auto_tool=%v\n", autoTool)
+	fmt.Printf("[break] target_block=%s\n", blockName)
+
+	if autoTool {
+		preferredKind := registry.PreferredToolForBlock(blockName)
+		selectedToolName := "none"
+		selectedSlot := -1
+
+		c.inventoryMu.RLock()
+		currentSlot := c.inventory.SelectedHotbarSlot
+		if preferredKind != registry.ToolNone {
+			for i := 0; i < 9; i++ {
+				invSlot := 36 + i
+				st, present := c.inventory.Slots[invSlot]
+				if present && st.Present {
+					kind := registry.ToolKindFromItem(st.Name)
+					if kind == preferredKind {
+						selectedToolName = st.Name
+						selectedSlot = i
+						break
+					}
+				}
+			}
+		}
+		c.inventoryMu.RUnlock()
+
+		if selectedSlot != -1 {
+			if selectedSlot != currentSlot {
+				if err := c.SelectHotbarSlot(ctx, selectedSlot); err != nil {
+					return fmt.Errorf("failed to select tool slot: %w", err)
+				}
+			}
+			fmt.Printf("[break] selected_tool=%s\n", selectedToolName)
+			fmt.Printf("[break] selected_slot=%d\n", selectedSlot)
+		} else {
+			heldItem, hasHeld := c.HeldItem()
+			if hasHeld {
+				selectedToolName = heldItem.Name
+			}
+			fmt.Printf("[break] selected_tool=%s\n", selectedToolName)
+			fmt.Printf("[break] selected_slot=%d\n", currentSlot)
+		}
+	}
+
+	// Subscribe to block update event before writing packets to prevent race conditions
+	ch := make(chan struct{}, 1)
+	handlerID, _ := c.bus.On("block_update", func(e state.Event) {
+		if ev, ok := e.(state.BlockUpdateEvent); ok {
+			if int(ev.X) == int(pos.X) && int(ev.Y) == int(pos.Y) && int(ev.Z) == int(pos.Z) {
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			}
+		}
+	})
+	defer c.bus.Off(handlerID)
+
 	start := &protocol.PlayServerboundPlayerActionPacket{
 		Status:   protocol.PlayerActionStartDigging,
 		Position: pos,
@@ -223,7 +383,23 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos) error {
 	if err := c.WritePacket(finish); err != nil {
 		return fmt.Errorf("break block finish: %w", err)
 	}
-	return nil
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-ch:
+		newState, err := c.world.GetBlock(int(pos.X), int(pos.Y), int(pos.Z))
+		if err != nil {
+			return err
+		}
+		if !c.world.IsReplaceable(world.BlockPos(pos)) || newState.Name == blockName {
+			return ErrBreakRolledBack
+		}
+		fmt.Printf("[break] result=PASS\n")
+		return nil
+	case <-time.After(3 * time.Second):
+		return ErrBlockUpdateTimeout
+	}
 }
 
 // PlaceBlockCreative places a block in creative mode at target using the given

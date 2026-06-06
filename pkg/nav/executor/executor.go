@@ -14,6 +14,45 @@ import (
 	"github.com/qrjhamron/feast/pkg/world"
 )
 
+type MovementProfile string
+
+const (
+	MovementBotLike   MovementProfile = "bot_like"
+	MovementHumanLike MovementProfile = "human_like"
+)
+
+type MovementOptions struct {
+	Profile   MovementProfile
+	Tolerance float64
+	Timeout   time.Duration
+}
+
+type MovementStats struct {
+	PacketsSent         int
+	ServerPositionsSeen int
+	CorrectionsSeen     int
+	Reached             bool
+	FinalDistance       float64
+}
+
+type MoveErrorReason string
+
+const (
+	MoveNoPath           MoveErrorReason = "no_path"
+	MoveTimeout          MoveErrorReason = "timeout"
+	MoveStuck            MoveErrorReason = "stuck"
+	MoveServerCorrection MoveErrorReason = "server_correction"
+)
+
+type MoveResult struct {
+	Reached             bool
+	Reason              MoveErrorReason
+	PacketsSent         int
+	ServerPositionsSeen int
+	CorrectionsSeen     int
+	FinalDistance       float64
+}
+
 type Client interface {
 	GetPosition() (x, y, z float64, yaw, pitch float32)
 	WritePacket(p protocol.Packet) error
@@ -39,10 +78,150 @@ type positionSample struct {
 	x, y, z float64
 }
 
+type resultTrackingClient struct {
+	Client
+	stats MovementStats
+}
+
+func (r *resultTrackingClient) TrackMovementStats(stats MovementStats) {
+	r.stats = stats
+}
+
+func ExecuteWithResult(ctx context.Context, client Client, w *world.World, g goal.Goal, initialPath []move.Movement, opts ...MovementOptions) (MoveResult, error) {
+	if len(initialPath) == 0 {
+		cx, cy, cz, _, _ := client.GetPosition()
+		return MoveResult{Reached: false, Reason: MoveNoPath, FinalDistance: finalDistanceToGoal(cx, cy, cz, g)}, fmt.Errorf("movement no path")
+	}
+	tracker := &resultTrackingClient{Client: client}
+	err := Execute(ctx, tracker, w, g, initialPath, opts...)
+	res := MoveResult{
+		Reached:             tracker.stats.Reached,
+		PacketsSent:         tracker.stats.PacketsSent,
+		ServerPositionsSeen: tracker.stats.ServerPositionsSeen,
+		CorrectionsSeen:     tracker.stats.CorrectionsSeen,
+		FinalDistance:       tracker.stats.FinalDistance,
+	}
+	if err == nil {
+		res.Reached = true
+		return res, nil
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "timeout") || ctx != nil && ctx.Err() == context.DeadlineExceeded:
+		res.Reason = MoveTimeout
+	case strings.Contains(msg, "stuck"):
+		res.Reason = MoveStuck
+	case res.CorrectionsSeen > 0:
+		res.Reason = MoveServerCorrection
+	default:
+		res.Reason = MoveNoPath
+	}
+	return res, err
+}
+
+func finalDistanceToGoal(x, y, z float64, g goal.Goal) float64 {
+	switch v := g.(type) {
+	case *goal.GoalBlock:
+		return distance3D(x, y, z, float64(v.X)+0.5, float64(v.Y), float64(v.Z)+0.5)
+	case *goal.GoalProximity:
+		return distance3D(x, y, z, float64(v.X)+0.5, float64(v.Y), float64(v.Z)+0.5)
+	case *goal.GoalXZ:
+		return math.Hypot(x-(float64(v.X)+0.5), z-(float64(v.Z)+0.5))
+	default:
+		return 0
+	}
+}
+
+func yawToFace(fromX, fromZ, toX, toZ float64) float32 {
+	dx := toX - fromX
+	dz := toZ - fromZ
+	if dx == 0 && dz == 0 {
+		return 0
+	}
+	return float32(-math.Atan2(dx, dz) * 180 / math.Pi)
+}
+
+func lerpYaw(current, target float32, maxStep float32) float32 {
+	diff := target - current
+	for diff < -180 {
+		diff += 360
+	}
+	for diff > 180 {
+		diff -= 360
+	}
+	if diff > maxStep {
+		return current + maxStep
+	}
+	if diff < -maxStep {
+		return current - maxStep
+	}
+	return target
+}
+
 // Execute executes a path to a goal, handling stuck detection and replanning.
-func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, initialPath []move.Movement) error {
+func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, initialPath []move.Movement, opts ...MovementOptions) (err error) {
+	var opt MovementOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	if opt.Profile == "" {
+		opt.Profile = MovementBotLike
+	}
+	if opt.Profile != MovementBotLike && opt.Profile != MovementHumanLike {
+		opt.Profile = MovementBotLike
+	}
+
+	if opt.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opt.Timeout)
+		defer cancel()
+	}
+
+	var targetX, targetY, targetZ float64
+	var hasTarget bool
+	if gb, ok := g.(*goal.GoalBlock); ok {
+		targetX, targetY, targetZ = float64(gb.X)+0.5, float64(gb.Y), float64(gb.Z)+0.5
+		hasTarget = true
+	} else if gp, ok := g.(*goal.GoalProximity); ok {
+		targetX, targetY, targetZ = float64(gp.X)+0.5, float64(gp.Y), float64(gp.Z)+0.5
+		hasTarget = true
+	} else if gz, ok := g.(*goal.GoalXZ); ok {
+		targetX, targetZ = float64(gz.X)+0.5, float64(gz.Z)+0.5
+		hasTarget = true
+	}
+
+	var stats MovementStats
+	defer func() {
+		cx, cy, cz, _, _ := client.GetPosition()
+		if hasTarget {
+			if _, ok := g.(*goal.GoalXZ); ok {
+				stats.FinalDistance = math.Hypot(cx-targetX, cz-targetZ)
+			} else {
+				stats.FinalDistance = distance3D(cx, cy, cz, targetX, targetY, targetZ)
+			}
+		}
+		if err == nil {
+			stats.Reached = true
+		}
+		if st, ok := client.(interface{ TrackMovementStats(MovementStats) }); ok {
+			st.TrackMovementStats(stats)
+		}
+	}()
+
+	var lastSeq uint64
+	var hasSeq bool
+	var seqTracker interface{ PositionSyncSeq() uint64 }
+	if ct, ok := client.(interface{ PositionSyncSeq() uint64 }); ok {
+		seqTracker = ct
+		lastSeq = seqTracker.PositionSyncSeq()
+		hasSeq = true
+	}
+
 	select {
 	case <-ctx.Done():
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("movement timeout exceeded")
+		}
 		return ctx.Err()
 	default:
 	}
@@ -64,8 +243,25 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 	currentPos := [3]int{int(math.Floor(cx)), int(math.Floor(cy)), int(math.Floor(cz))}
 	var history []positionSample
 
+	// Check if already satisfied or within tolerance at start
+	if hasTarget && opt.Tolerance > 0 {
+		var dist float64
+		if _, ok := g.(*goal.GoalXZ); ok {
+			dist = math.Hypot(cx-targetX, cz-targetZ)
+		} else {
+			dist = distance3D(cx, cy, cz, targetX, targetY, targetZ)
+		}
+		if dist <= opt.Tolerance {
+			return nil
+		}
+	}
 	if g.Satisfied(currentPos[0], currentPos[1], currentPos[2]) {
 		return nil
+	}
+
+	writePacket := func(p protocol.Packet) error {
+		stats.PacketsSent++
+		return client.WritePacket(p)
 	}
 
 	// Track sprinting based on water transitions.
@@ -86,6 +282,17 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 
 		cx, cy, cz, cyaw, cpitch = client.GetPosition()
 		currentPos = [3]int{int(math.Floor(cx)), int(math.Floor(cy)), int(math.Floor(cz))}
+		if hasTarget && opt.Tolerance > 0 {
+			var dist float64
+			if _, ok := g.(*goal.GoalXZ); ok {
+				dist = math.Hypot(cx-targetX, cz-targetZ)
+			} else {
+				dist = distance3D(cx, cy, cz, targetX, targetY, targetZ)
+			}
+			if dist <= opt.Tolerance {
+				return nil
+			}
+		}
 		if g.Satisfied(currentPos[0], currentPos[1], currentPos[2]) {
 			return nil
 		}
@@ -127,12 +334,18 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					select {
 					case <-ctx.Done():
 						timer.Stop()
+						if ctx.Err() == context.DeadlineExceeded {
+							return fmt.Errorf("movement timeout exceeded")
+						}
 						return ctx.Err()
 					case <-timer.C:
 					}
 				} else {
 					select {
 					case <-ctx.Done():
+						if ctx.Err() == context.DeadlineExceeded {
+							return fmt.Errorf("movement timeout exceeded")
+						}
 						return ctx.Err()
 					default:
 					}
@@ -140,9 +353,32 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 
 				cx, cy, cz, cyaw, cpitch = client.GetPosition()
 				ix, iy, iz := int(math.Floor(cx)), int(math.Floor(cy)), int(math.Floor(cz))
+				if hasTarget && opt.Tolerance > 0 {
+					var dist float64
+					if _, ok := g.(*goal.GoalXZ); ok {
+						dist = math.Hypot(cx-targetX, cz-targetZ)
+					} else {
+						dist = distance3D(cx, cy, cz, targetX, targetY, targetZ)
+					}
+					if dist <= opt.Tolerance {
+						return nil
+					}
+				}
 				if g.Satisfied(ix, iy, iz) {
 					return nil
 				}
+
+				if hasSeq {
+					currSeq := seqTracker.PositionSyncSeq()
+					if currSeq != lastSeq {
+						stats.CorrectionsSeen++
+						stats.ServerPositionsSeen++
+						lastSeq = currSeq
+						cx, cy, cz, cyaw, cpitch = client.GetPosition()
+						yPos = cy
+					}
+				}
+
 				nowInWater := inWaterAt(w, ix, iy, iz)
 				if idp, ok := client.(entityIDProvider); ok && nowInWater != inWater {
 					action := protocol.PlayerCommandStartSprinting
@@ -154,7 +390,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 						ActionID:  action,
 						JumpBoost: 0,
 					}
-					if err := client.WritePacket(pkt); err != nil {
+					if err := writePacket(pkt); err != nil {
 						return err
 					}
 					sprinting = !nowInWater
@@ -174,10 +410,13 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					avoid := dest
 					res := planAvoid(ctx, actPos, g, w, avoid)
 					if res.Status == planner.PlanCancelled {
+						if ctx.Err() == context.DeadlineExceeded {
+							return fmt.Errorf("movement timeout exceeded")
+						}
 						return ctx.Err()
 					}
 					if len(res.Path) == 0 {
-						return fmt.Errorf("planner: replanning produced empty path (status=%v)", res.Status)
+						return fmt.Errorf("movement stuck: replanning produced empty path (status=%v)", res.Status)
 					}
 					path = res.Path
 					replanned = true
@@ -187,7 +426,17 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					break
 				}
 
-				tx, tz := nextHorizontalPosition(cx, cz, destX, destZ, horizontalSpeedPerTick(m, sprinting))
+				speed := horizontalSpeedPerTick(m, sprinting)
+				if opt.Profile == MovementHumanLike {
+					progress := float64(i+1) / float64(ticks)
+					mult := math.Sin(progress * math.Pi)
+					if mult < 0.5 {
+						mult = 0.5
+					}
+					speed = speed * mult
+				}
+
+				tx, tz := nextHorizontalPosition(cx, cz, destX, destZ, speed)
 				if isJump {
 					if i == 0 {
 						yPos += yVel
@@ -213,8 +462,19 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					yVel = 0
 				}
 
+				var targetYaw float32
 				if rm, ok := m.(move.RotatingMovement); ok {
-					cyaw = rm.DesiredYaw(edgeStart)
+					targetYaw = rm.DesiredYaw(edgeStart)
+				} else if dx, dz := destX-cx, destZ-cz; math.Hypot(dx, dz) > 0.001 {
+					targetYaw = yawToFace(cx, cz, destX, destZ)
+				} else {
+					targetYaw = cyaw
+				}
+
+				if opt.Profile == MovementHumanLike {
+					cyaw = lerpYaw(cyaw, targetYaw, 20.0)
+				} else {
+					cyaw = targetYaw
 				}
 
 				pkt := protocol.PlayServerboundSetPlayerPositionAndRotationPacket{
@@ -225,7 +485,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					Pitch:    cpitch,
 					OnGround: onGround,
 				}
-				if err := client.WritePacket(&pkt); err != nil {
+				if err := writePacket(&pkt); err != nil {
 					return err
 				}
 			}
@@ -247,7 +507,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 			continue
 		}
 		if !stepAdvanced {
-			return fmt.Errorf("movement did not advance after retry")
+			return fmt.Errorf("movement stuck: did not advance after retry")
 		}
 
 		currentPos = dest

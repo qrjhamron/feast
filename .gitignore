@@ -14,7 +14,7 @@ server.jar
 paper*.jar
 eula.txt
 server.properties
-world/
+/world/
 world_nether/
 world_the_end/
 plugins/

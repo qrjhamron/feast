@@ -323,3 +323,21 @@ type EntityMetadataUpdateEvent struct {
 
 // EventType returns event key.
 func (e EntityMetadataUpdateEvent) EventType() string { return "entity_metadata" }
+
+// OpenScreenEvent is emitted when the server opens a container screen.
+type OpenScreenEvent struct {
+	WindowID   int32
+	WindowType int32
+	Title      string
+}
+
+// EventType returns event key.
+func (e OpenScreenEvent) EventType() string { return "open_screen" }
+
+// CloseContainerEvent is emitted when the server closes a container.
+type CloseContainerEvent struct {
+	WindowID byte
+}
+
+// EventType returns event key.
+func (e CloseContainerEvent) EventType() string { return "close_container" }

@@ -1,7 +1,8 @@
 # FeastGo Smoke Scripts
 
 Smoke scripts connect to a **live Minecraft Paper 1.20.4** server and execute
-structured smoke tests via `cmd/smoke`.
+structured smoke tests via `cmd/smoke`. Current validation targets protocol 765
+in offline mode only.
 
 ## Quick Start
 
@@ -15,6 +16,18 @@ bash ./test/smoke/scripts/run_paper_smoke.sh
 
 # Local validation only (no server):
 bash ./test/smoke/scripts/run_local_validation.sh
+```
+
+Required `server.properties` baseline:
+
+```properties
+online-mode=false
+spawn-protection=0
+difficulty=peaceful
+gamemode=survival
+enable-command-block=false
+view-distance=10
+simulation-distance=10
 ```
 
 ## Individual Modes

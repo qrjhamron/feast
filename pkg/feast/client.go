@@ -75,6 +75,16 @@ type Client struct {
 	hpaInvalidations int32
 	positionSyncSeq  uint64
 	positionSynced   bool
+
+	movementProfile   MovementProfile
+	activeOptions     MovementOptions
+	lastMovementStats MovementStats
+	statsTrackMu      sync.RWMutex
+
+	activeContainer   *Container
+	containerSlots    map[int32]map[int]ItemStack
+	containerStateIDs map[int32]int32
+	containerMu       sync.RWMutex
 }
 
 // LogEvent is a structured debug log entry emitted by the client.
@@ -135,14 +145,17 @@ type PlayerState struct {
 // NewClient creates a new internal orchestrator client.
 func NewClient(opts Options) *Client {
 	c := &Client{
-		opts:       opts,
-		fsm:        state.NewFSM(),
-		bus:        state.NewEventBus(),
-		dispatcher: state.NewDispatcher(state.NewEventBus()),
-		dialFunc:   net.Dial,
-		world:      world.NewWorld(),
-		entities:   world.NewEntityStore(),
-		chunkSem:   make(chan struct{}, 8),
+		opts:              opts,
+		fsm:               state.NewFSM(),
+		bus:               state.NewEventBus(),
+		dispatcher:        state.NewDispatcher(state.NewEventBus()),
+		dialFunc:          net.Dial,
+		world:             world.NewWorld(),
+		entities:          world.NewEntityStore(),
+		chunkSem:          make(chan struct{}, 8),
+		movementProfile:   MovementBotLike,
+		containerSlots:    make(map[int32]map[int]ItemStack),
+		containerStateIDs: make(map[int32]int32),
 	}
 	c.world.SetEntityStore(c.entities)
 	c.initHPA()
@@ -204,6 +217,12 @@ func (c *Client) Entities() *world.EntityStore {
 func (c *Client) GetPosition() (x, y, z float64, yaw, pitch float32) {
 	st := c.PlayerState()
 	return st.X, st.Y, st.Z, st.Yaw, st.Pitch
+}
+
+func (c *Client) PositionSynced() bool {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.positionSynced
 }
 
 // EntityID returns the player's current entity ID.

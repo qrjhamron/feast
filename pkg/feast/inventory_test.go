@@ -210,6 +210,7 @@ func TestItemAndBlockMapping(t *testing.T) {
 func TestPlaceBlockSurvivalSuccessAndFailure(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		c := NewClient(Options{})
+		markCoreActionReady(t, c)
 		ch := world.NewChunk(0, 0)
 		c.world.AddChunk(ch)
 
@@ -221,9 +222,9 @@ func TestPlaceBlockSurvivalSuccessAndFailure(t *testing.T) {
 
 		// Mock player coordinates so it doesn't overlap target (10, 64, 10)
 		c.stateMu.Lock()
-		c.player.X = 5.0
+		c.player.X = 8.5
 		c.player.Y = 64.0
-		c.player.Z = 5.0
+		c.player.Z = 8.5
 		c.stateMu.Unlock()
 
 		// Track stone in hotbar slot 36
@@ -285,6 +286,266 @@ func TestPlaceBlockSurvivalSuccessAndFailure(t *testing.T) {
 		err := c.PlaceBlockSurvival(context.Background(), protocol.BlockPos{X: 10, Y: 64, Z: 10}, protocol.DirectionUp)
 		if err == nil {
 			t.Fatalf("expected error due to no placeable block, got nil")
+		}
+	})
+}
+
+func TestBreakBlockAutoTool(t *testing.T) {
+	t.Run("auto_select_tools", func(t *testing.T) {
+		c := NewClient(Options{})
+		markCoreActionReady(t, c)
+		ch := world.NewChunk(0, 0)
+		c.world.AddChunk(ch)
+
+		// Set bot position close to target
+		c.stateMu.Lock()
+		c.player.X = 0.0
+		c.player.Y = 64.0
+		c.player.Z = 0.0
+		c.stateMu.Unlock()
+
+		// Add tools to hotbar
+		// 831 is iron_pickaxe, 830 is iron_shovel, 832 is iron_axe
+		c.trackInventorySlot(36, protocol.ItemStack{Present: true, ItemID: 831, Count: 1}) // Slot 0
+		c.trackInventorySlot(37, protocol.ItemStack{Present: true, ItemID: 830, Count: 1}) // Slot 1
+		c.trackInventorySlot(38, protocol.ItemStack{Present: true, ItemID: 832, Count: 1}) // Slot 2
+
+		// Mock connection
+		a, b := net.Pipe()
+		defer a.Close()
+		defer b.Close()
+		c.conn = feastconn.New(a)
+
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				_, err := b.Read(buf)
+				if err != nil {
+					return
+				}
+			}
+		}()
+
+		// Test Case 1: Stone block -> Pickaxe (Slot 0)
+		c.world.SetBlock(0, 64, 2, 1) // Stone
+		// Simulate server sending block update to air when dug
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			c.world.SetBlock(0, 64, 2, 0)
+			c.bus.Emit(state.BlockUpdateEvent{X: 0, Y: 64, Z: 2, StateID: 0})
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		err := c.BreakBlock(ctx, protocol.BlockPos{X: 0, Y: 64, Z: 2}, BreakOptions{AutoTool: true})
+		cancel()
+		if err != nil {
+			t.Fatalf("expected stone break to succeed, got: %v", err)
+		}
+		c.inventoryMu.RLock()
+		if c.inventory.SelectedHotbarSlot != 0 {
+			t.Errorf("expected hotbar slot 0 for pickaxe, got %d", c.inventory.SelectedHotbarSlot)
+		}
+		c.inventoryMu.RUnlock()
+
+		// Test Case 2: Dirt block -> Shovel (Slot 1)
+		c.world.SetBlock(0, 64, 2, 10) // Dirt (state ID 10)
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			c.world.SetBlock(0, 64, 2, 0)
+			c.bus.Emit(state.BlockUpdateEvent{X: 0, Y: 64, Z: 2, StateID: 0})
+		}()
+		ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+		err = c.BreakBlock(ctx, protocol.BlockPos{X: 0, Y: 64, Z: 2}, BreakOptions{AutoTool: true})
+		cancel()
+		if err != nil {
+			t.Fatalf("expected dirt break to succeed, got: %v", err)
+		}
+		c.inventoryMu.RLock()
+		if c.inventory.SelectedHotbarSlot != 1 {
+			t.Errorf("expected hotbar slot 1 for shovel, got %d", c.inventory.SelectedHotbarSlot)
+		}
+		c.inventoryMu.RUnlock()
+
+		// Test Case 3: Oak Log -> Axe (Slot 2)
+		c.world.SetBlock(0, 64, 2, 131) // Oak Log (state ID 131)
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			c.world.SetBlock(0, 64, 2, 0)
+			c.bus.Emit(state.BlockUpdateEvent{X: 0, Y: 64, Z: 2, StateID: 0})
+		}()
+		ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+		err = c.BreakBlock(ctx, protocol.BlockPos{X: 0, Y: 64, Z: 2}, BreakOptions{AutoTool: true})
+		cancel()
+		if err != nil {
+			t.Fatalf("expected log break to succeed, got: %v", err)
+		}
+		c.inventoryMu.RLock()
+		if c.inventory.SelectedHotbarSlot != 2 {
+			t.Errorf("expected hotbar slot 2 for axe, got %d", c.inventory.SelectedHotbarSlot)
+		}
+		c.inventoryMu.RUnlock()
+	})
+
+	t.Run("fallback_and_errors", func(t *testing.T) {
+		c := NewClient(Options{})
+		markCoreActionReady(t, c)
+		ch := world.NewChunk(0, 0)
+		c.world.AddChunk(ch)
+
+		c.stateMu.Lock()
+		c.player.X = 0.0
+		c.player.Y = 64.0
+		c.player.Z = 0.0
+		c.stateMu.Unlock()
+
+		// Mock connection
+		a, b := net.Pipe()
+		defer a.Close()
+		defer b.Close()
+		c.conn = feastconn.New(a)
+
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				_, err := b.Read(buf)
+				if err != nil {
+					return
+				}
+			}
+		}()
+
+		// Target is out of reach
+		err := c.BreakBlock(context.Background(), protocol.BlockPos{X: 10, Y: 64, Z: 10}, BreakOptions{AutoTool: true})
+		if err == nil {
+			t.Errorf("expected error for out of reach target")
+		}
+
+		// Target is under feet
+		err = c.BreakBlock(context.Background(), protocol.BlockPos{X: 0, Y: 63, Z: 0}, BreakOptions{AutoTool: true})
+		if err == nil {
+			t.Errorf("expected error for under feet target")
+		}
+
+		// Fallback cleanly when no tool is found
+		c.world.SetBlock(0, 64, 2, 1) // Stone
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			c.world.SetBlock(0, 64, 2, 0)
+			c.bus.Emit(state.BlockUpdateEvent{X: 0, Y: 64, Z: 2, StateID: 0})
+		}()
+		err = c.BreakBlock(context.Background(), protocol.BlockPos{X: 0, Y: 64, Z: 2}, BreakOptions{AutoTool: true})
+		if err != nil {
+			t.Errorf("expected fallback to succeed, got: %v", err)
+		}
+	})
+}
+
+func TestContainerChestSupport(t *testing.T) {
+	t.Run("open_container_and_updates", func(t *testing.T) {
+		c := NewClient(Options{})
+
+		// Mock connection
+		a, b := net.Pipe()
+		defer a.Close()
+		defer b.Close()
+		c.conn = feastconn.New(a)
+
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				_, err := b.Read(buf)
+				if err != nil {
+					return
+				}
+			}
+		}()
+
+		// Simulate server sending open screen event
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			c.bus.Emit(state.OpenScreenEvent{
+				WindowID:   5,
+				WindowType: 2, // generic_9x3 chest
+				Title:      "My Chest Title",
+			})
+			// Simulate server sending container content event
+			c.bus.Emit(state.ContainerContentEvent{
+				WindowID: 5,
+				Slots: []protocol.ItemStack{
+					{Present: true, ItemID: 1, Count: 64}, // Slot 0: stone
+					{Present: false},                      // Slot 1: empty
+				},
+			})
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		container, err := c.OpenChest(ctx, BlockPos{X: 1, Y: 2, Z: 3})
+		if err != nil {
+			t.Fatalf("expected OpenChest to succeed, got: %v", err)
+		}
+		if container.ID != 5 || container.Type != "chest" || container.Title != "My Chest Title" {
+			t.Fatalf("unexpected container values: %+v", container)
+		}
+
+		// Verify ActiveContainer
+		active := c.ActiveContainer()
+		if active == nil || active.ID != 5 {
+			t.Fatalf("expected active container to be set")
+		}
+
+		// Verify slots
+		items := c.ContainerItems(5)
+		if len(items) != 2 {
+			t.Fatalf("expected 2 items, got %d", len(items))
+		}
+		if !items[0].Present || items[0].ItemID != 1 {
+			t.Fatalf("expected slot 0 to have stone, got %+v", items[0])
+		}
+		if items[1].Present {
+			t.Fatalf("expected slot 1 to be empty, got %+v", items[1])
+		}
+
+		// Test slot update
+		c.bus.Emit(state.InventorySlotEvent{
+			WindowID: 5,
+			Slot:     1,
+			Item:     protocol.ItemStack{Present: true, ItemID: 28, Count: 32}, // dirt
+		})
+
+		items = c.ContainerItems(5)
+		if !items[1].Present || items[1].ItemID != 28 {
+			t.Fatalf("expected slot 1 to have dirt now, got %+v", items[1])
+		}
+
+		// Close Container
+		err = c.CloseContainer(ctx, 5)
+		if err != nil {
+			t.Fatalf("expected CloseContainer to succeed, got %v", err)
+		}
+
+		// Verify container cleared
+		if c.ActiveContainer() != nil {
+			t.Fatalf("expected active container to be cleared")
+		}
+		if c.ContainerItems(5) != nil {
+			t.Fatalf("expected container slots to be cleared")
+		}
+	})
+
+	t.Run("unknown_container_fallback", func(t *testing.T) {
+		c := NewClient(Options{})
+
+		// Simulate server opening unknown container type
+		c.bus.Emit(state.OpenScreenEvent{
+			WindowID:   6,
+			WindowType: 99, // unknown type
+			Title:      "Strange Box",
+		})
+
+		active := c.ActiveContainer()
+		if active == nil || active.Type != "window_type_99" {
+			t.Fatalf("expected unknown container type fallback to window_type_99, got %+v", active)
 		}
 	})
 }

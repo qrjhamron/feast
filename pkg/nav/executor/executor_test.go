@@ -97,6 +97,29 @@ func TestExecute_ImmediateSatisfied(t *testing.T) {
 	}
 }
 
+func TestExecuteWithResultClassifiesNoPathAndTimeout(t *testing.T) {
+	client := &mockClient{}
+	w := world.NewWorld()
+
+	noPath, err := ExecuteWithResult(context.Background(), client, w, mockGoal{satisfied: false}, nil)
+	if err == nil {
+		t.Fatal("expected no-path error")
+	}
+	if noPath.Reached || noPath.Reason != MoveNoPath {
+		t.Fatalf("no-path result=%+v", noPath)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	timeout, err := ExecuteWithResult(ctx, client, w, mockGoal{satisfied: false}, []move.Movement{mockMove{}})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if timeout.Reached || timeout.Reason != MoveTimeout {
+		t.Fatalf("timeout result=%+v", timeout)
+	}
+}
+
 func TestExecute_OneMove(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -472,5 +495,161 @@ func TestStuckDetectsOnlyAfterFullLookbackWindow(t *testing.T) {
 	}
 	if !stuck(fullHistory, 5*time.Second, 0.1, now) {
 		t.Fatal("expected stuck when movement remains below threshold over full lookback")
+	}
+}
+
+type statsClient struct {
+	mockClient
+	stats MovementStats
+}
+
+func (s *statsClient) TrackMovementStats(stats MovementStats) {
+	s.stats = stats
+}
+
+func TestExecute_MovementOptionsDefaultsAndHumanLike(t *testing.T) {
+	ctx := context.Background()
+	w := world.NewWorld()
+	g := mockGoal{satisfied: true}
+
+	// 1. Default (no options) should fallback to BotLike
+	client := &statsClient{}
+	err := Execute(ctx, client, w, g, []move.Movement{})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if client.stats.Reached != true {
+		t.Errorf("expected Reached to be true")
+	}
+
+	// 2. HumanLike profile manually enabled
+	client = &statsClient{}
+	err = Execute(ctx, client, w, g, []move.Movement{}, MovementOptions{Profile: MovementHumanLike})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// 3. Invalid profile falls back safely to BotLike
+	client = &statsClient{}
+	err = Execute(ctx, client, w, g, []move.Movement{}, MovementOptions{Profile: "invalid_profile"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestExecute_TimeoutReturnsClearError(t *testing.T) {
+	ctx := context.Background()
+	client := &statsClient{mockClient: mockClient{entityID: 10, failAfterPosN: 999, x: 0.5, y: 10, z: 0.5}}
+	w := world.NewWorld()
+	ch := world.NewChunk(0, 0)
+	ch.SetBlock(0, 9, 0, world.BlockState{Name: "minecraft:stone"})
+	ch.SetBlock(1, 9, 0, world.BlockState{Name: "minecraft:stone"})
+	w.AddChunk(ch)
+
+	g := mockGoal{satisfied: false}
+	path := []move.Movement{move.MoveWalk{Dx: 1, Dz: 0}}
+
+	// Timeout set to 1ms should cause immediate timeout error
+	err := Execute(ctx, client, w, g, path, MovementOptions{Timeout: 1 * time.Millisecond})
+	if err == nil {
+		t.Fatalf("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout exceeded") {
+		t.Errorf("expected error message to contain 'timeout exceeded', got: %v", err)
+	}
+}
+
+func TestExecute_YawFacesMovementDirection(t *testing.T) {
+	ctx := context.Background()
+	client := &statsClient{mockClient: mockClient{entityID: 10, failAfterPosN: 1, x: 0.5, y: 10, z: 0.5}}
+	w := world.NewWorld()
+	ch := world.NewChunk(0, 0)
+	ch.SetBlock(0, 9, 0, world.BlockState{Name: "minecraft:stone"})
+	ch.SetBlock(1, 9, 0, world.BlockState{Name: "minecraft:stone"})
+	w.AddChunk(ch)
+
+	g := mockGoal{satisfied: false}
+	// Move diagonally
+	path := []move.Movement{move.MoveWalk{Dx: 1, Dz: 1}}
+
+	_ = Execute(ctx, client, w, g, path)
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.packets) == 0 {
+		t.Fatalf("expected at least one packet")
+	}
+	var sawYaw float32
+	var found bool
+	for _, p := range client.packets {
+		if pp, ok := p.(*protocol.PlayServerboundSetPlayerPositionAndRotationPacket); ok {
+			sawYaw = pp.Yaw
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected set position and rotation packet")
+	}
+	expectedYaw := yawToFace(0.5, 0.5, 1.5, 1.5)
+	if math.Abs(float64(sawYaw-expectedYaw)) > 1e-3 {
+		t.Errorf("expected yaw to face movement direction: got %f, want %f", sawYaw, expectedYaw)
+	}
+}
+
+func TestExecute_HumanLikeSpeedBounds(t *testing.T) {
+	ctx := context.Background()
+	client := &statsClient{mockClient: mockClient{entityID: 10, x: 0.5, y: 10, z: 0.5}}
+	w := world.NewWorld()
+	ch := world.NewChunk(0, 0)
+	ch.SetBlock(0, 9, 0, world.BlockState{Name: "minecraft:stone"})
+	ch.SetBlock(1, 9, 0, world.BlockState{Name: "minecraft:stone"})
+	w.AddChunk(ch)
+
+	g := mockGoal{satisfied: false}
+	path := []move.Movement{move.MoveWalk{Dx: 1, Dz: 0}}
+
+	// Execute with HumanLike movement profile
+	_ = Execute(ctx, client, w, g, path, MovementOptions{Profile: MovementHumanLike})
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+
+	// Check that speed in all packets is <= walk speed (0.215)
+	var prevX, prevZ float64
+	var first = true
+	for _, p := range client.packets {
+		if pp, ok := p.(*protocol.PlayServerboundSetPlayerPositionAndRotationPacket); ok {
+			if first {
+				prevX, prevZ = pp.X, pp.Z
+				first = false
+				continue
+			}
+			step := math.Hypot(pp.X-prevX, pp.Z-prevZ)
+			if step > 0.280+1e-5 {
+				t.Errorf("speed step %f exceeded max walk speed 0.280", step)
+			}
+			prevX, prevZ = pp.X, pp.Z
+		}
+	}
+}
+
+func TestExecute_NoProgressReturnsClearError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	client := &statsClient{mockClient: mockClient{entityID: 102, x: 0.5, y: 10, z: 0.5, freezePosN: 999}}
+	w := world.NewWorld()
+	ch := world.NewChunk(0, 0)
+	ch.SetBlock(0, 9, 0, world.BlockState{Name: "minecraft:stone"})
+	ch.SetBlock(1, 9, 0, world.BlockState{Name: "minecraft:stone"})
+	w.AddChunk(ch)
+
+	err := Execute(ctx, client, w, mockGoal{satisfied: false}, []move.Movement{move.MoveWalk{Dx: 1, Dz: 0}})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "movement stuck: did not advance after retry") {
+		t.Errorf("expected stuck error, got: %v", err)
 	}
 }
