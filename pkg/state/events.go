@@ -269,6 +269,17 @@ type ChunkLoadEvent struct {
 // EventType returns event key.
 func (e ChunkLoadEvent) EventType() string { return "chunk_load" }
 
+// ChunkUnloadEvent is emitted when the server tells the client to unload a
+// chunk column. Consumers should drop any cached state for the chunk so that
+// stale blocks/block-entities are not served after the server forgets them.
+type ChunkUnloadEvent struct {
+	ChunkX int32
+	ChunkZ int32
+}
+
+// EventType returns event key.
+func (e ChunkUnloadEvent) EventType() string { return "chunk_unload" }
+
 // EntitySpawnEvent is emitted when an entity spawns.
 type EntitySpawnEvent struct {
 	EntityID int32

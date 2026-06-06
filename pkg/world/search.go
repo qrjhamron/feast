@@ -24,6 +24,11 @@ type BlockHit struct {
 
 // FindNearestBlock searches loaded chunks for the nearest block with the given
 // registry name within radius blocks of origin.
+//
+// Only chunk columns overlapping the search radius are visited (looked up
+// directly by coordinate), so cost scales with the radius rather than with the
+// total number of loaded chunks. Chunks are visited in a deterministic
+// coordinate order, so ties at equal distance resolve deterministically.
 func (w *World) FindNearestBlock(origin Vec3, name string, radius int) (BlockHit, bool) {
 	if w == nil || radius < 0 {
 		return BlockHit{}, false
@@ -33,58 +38,76 @@ func (w *World) FindNearestBlock(origin Vec3, name string, radius int) (BlockHit
 		return BlockHit{}, false
 	}
 
+	originX := int(math.Floor(origin.X))
+	originZ := int(math.Floor(origin.Z))
 	originBlockY := int(math.Floor(origin.Y))
 	minY := maxInt(MinY, originBlockY-radius)
 	maxY := minInt(MaxY, originBlockY+radius)
 	radiusSq := float64(radius * radius)
 
+	minCX := floorDiv(originX-radius, ChunkWidth)
+	maxCX := floorDiv(originX+radius, ChunkWidth)
+	minCZ := floorDiv(originZ-radius, ChunkDepth)
+	maxCZ := floorDiv(originZ+radius, ChunkDepth)
+
 	var best BlockHit
 	bestDistSq := math.Inf(1)
 	found := false
 
-	w.chunks.Range(func(_, value any) bool {
-		chunk, ok := value.(*Chunk)
-		if !ok || chunk == nil {
-			return true
-		}
-		baseX := chunk.ChunkX * ChunkWidth
-		baseZ := chunk.ChunkZ * ChunkDepth
-		for localZ := 0; localZ < ChunkDepth; localZ++ {
-			worldZ := baseZ + localZ
-			dz := float64(worldZ) - origin.Z
-			if dz*dz > radiusSq {
+	for cx := minCX; cx <= maxCX; cx++ {
+		for cz := minCZ; cz <= maxCZ; cz++ {
+			v, ok := w.chunks.Load(chunkKey{x: cx, z: cz})
+			if !ok {
 				continue
 			}
-			for localX := 0; localX < ChunkWidth; localX++ {
-				worldX := baseX + localX
-				dx := float64(worldX) - origin.X
-				if dx*dx+dz*dz > radiusSq {
+			chunk, _ := v.(*Chunk)
+			if chunk == nil {
+				continue
+			}
+			baseX := cx * ChunkWidth
+			baseZ := cz * ChunkDepth
+			for localZ := 0; localZ < ChunkDepth; localZ++ {
+				worldZ := baseZ + localZ
+				dz := float64(worldZ) - origin.Z
+				dz2 := dz * dz
+				if dz2 > radiusSq {
 					continue
 				}
-				for y := minY; y <= maxY; y++ {
-					dy := float64(y) - origin.Y
-					distSq := dx*dx + dy*dy + dz*dz
-					if distSq > radiusSq || distSq >= bestDistSq {
+				for localX := 0; localX < ChunkWidth; localX++ {
+					worldX := baseX + localX
+					dx := float64(worldX) - origin.X
+					dxz2 := dx*dx + dz2
+					if dxz2 > radiusSq {
 						continue
 					}
-					block, ok := chunk.BlockAt(localX, y, localZ)
-					if !ok || normalizeBlockName(block.Name) != target {
-						continue
-					}
-					found = true
-					bestDistSq = distSq
-					best = BlockHit{
-						X:        worldX,
-						Y:        y,
-						Z:        worldZ,
-						Block:    block,
-						Distance: math.Sqrt(distSq),
+					for y := minY; y <= maxY; y++ {
+						dy := float64(y) - origin.Y
+						distSq := dxz2 + dy*dy
+						if distSq > radiusSq || distSq >= bestDistSq {
+							continue
+						}
+						name, nameOK := chunk.blockNameAt(localX, y, localZ)
+						// Registry-derived block names are already normalized, so a
+						// direct comparison is correct and avoids per-block string work.
+						if !nameOK || name != target {
+							continue
+						}
+						// Only materialize the full block state on a match.
+						block, _ := chunk.BlockAt(localX, y, localZ)
+						found = true
+						bestDistSq = distSq
+						best = BlockHit{
+							X:        worldX,
+							Y:        y,
+							Z:        worldZ,
+							Block:    block,
+							Distance: math.Sqrt(distSq),
+						}
 					}
 				}
 			}
 		}
-		return true
-	})
+	}
 
 	return best, found
 }
@@ -100,54 +123,69 @@ func (w *World) FindBlocks(origin Vec3, name string, count, radius int) []BlockH
 		return nil
 	}
 
+	originX := int(math.Floor(origin.X))
+	originZ := int(math.Floor(origin.Z))
 	originBlockY := int(math.Floor(origin.Y))
 	minY := maxInt(MinY, originBlockY-radius)
 	maxY := minInt(MaxY, originBlockY+radius)
 	radiusSq := float64(radius * radius)
 
+	minCX := floorDiv(originX-radius, ChunkWidth)
+	maxCX := floorDiv(originX+radius, ChunkWidth)
+	minCZ := floorDiv(originZ-radius, ChunkDepth)
+	maxCZ := floorDiv(originZ+radius, ChunkDepth)
+
 	var hits []BlockHit
 
-	w.chunks.Range(func(_, value any) bool {
-		chunk, ok := value.(*Chunk)
-		if !ok || chunk == nil {
-			return true
-		}
-		baseX := chunk.ChunkX * ChunkWidth
-		baseZ := chunk.ChunkZ * ChunkDepth
-		for localZ := 0; localZ < ChunkDepth; localZ++ {
-			worldZ := baseZ + localZ
-			dz := float64(worldZ) - origin.Z
-			if dz*dz > radiusSq {
+	for cx := minCX; cx <= maxCX; cx++ {
+		for cz := minCZ; cz <= maxCZ; cz++ {
+			v, ok := w.chunks.Load(chunkKey{x: cx, z: cz})
+			if !ok {
 				continue
 			}
-			for localX := 0; localX < ChunkWidth; localX++ {
-				worldX := baseX + localX
-				dx := float64(worldX) - origin.X
-				if dx*dx+dz*dz > radiusSq {
+			chunk, _ := v.(*Chunk)
+			if chunk == nil {
+				continue
+			}
+			baseX := cx * ChunkWidth
+			baseZ := cz * ChunkDepth
+			for localZ := 0; localZ < ChunkDepth; localZ++ {
+				worldZ := baseZ + localZ
+				dz := float64(worldZ) - origin.Z
+				dz2 := dz * dz
+				if dz2 > radiusSq {
 					continue
 				}
-				for y := minY; y <= maxY; y++ {
-					dy := float64(y) - origin.Y
-					distSq := dx*dx + dy*dy + dz*dz
-					if distSq > radiusSq {
+				for localX := 0; localX < ChunkWidth; localX++ {
+					worldX := baseX + localX
+					dx := float64(worldX) - origin.X
+					dxz2 := dx*dx + dz2
+					if dxz2 > radiusSq {
 						continue
 					}
-					block, ok := chunk.BlockAt(localX, y, localZ)
-					if !ok || normalizeBlockName(block.Name) != target {
-						continue
+					for y := minY; y <= maxY; y++ {
+						dy := float64(y) - origin.Y
+						distSq := dxz2 + dy*dy
+						if distSq > radiusSq {
+							continue
+						}
+						name, nameOK := chunk.blockNameAt(localX, y, localZ)
+						if !nameOK || name != target {
+							continue
+						}
+						block, _ := chunk.BlockAt(localX, y, localZ)
+						hits = append(hits, BlockHit{
+							X:        worldX,
+							Y:        y,
+							Z:        worldZ,
+							Block:    block,
+							Distance: math.Sqrt(distSq),
+						})
 					}
-					hits = append(hits, BlockHit{
-						X:        worldX,
-						Y:        y,
-						Z:        worldZ,
-						Block:    block,
-						Distance: math.Sqrt(distSq),
-					})
 				}
 			}
 		}
-		return true
-	})
+	}
 
 	sort.Slice(hits, func(i, j int) bool {
 		return hits[i].Distance < hits[j].Distance

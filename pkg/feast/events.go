@@ -196,6 +196,15 @@ func (c *Client) registerStateHandlers() {
 			}
 		}
 	})
+	c.bus.On("chunk_unload", func(e state.Event) {
+		ev, ok := e.(state.ChunkUnloadEvent)
+		if !ok {
+			return
+		}
+		// Drop the chunk from world state so cached blocks/block-entities are
+		// not served after the server forgets the column.
+		c.world.RemoveChunk(int(ev.ChunkX), int(ev.ChunkZ))
+	})
 	c.bus.On("entity_spawn", func(e state.Event) {
 		ev, ok := e.(state.EntitySpawnEvent)
 		if !ok {

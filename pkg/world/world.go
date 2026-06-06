@@ -5,13 +5,29 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 
 	"github.com/qrjhamron/feast/pkg/protocol"
 )
 
 var (
-	ErrBlockNotFound  = errors.New("block not found")
+	// ErrBlockNotFound is returned when a block cannot be read for any reason.
+	ErrBlockNotFound = errors.New("block not found")
+	// ErrChunkNotLoaded is returned when the chunk containing a block is not loaded.
 	ErrChunkNotLoaded = errors.New("chunk not loaded")
+	// ErrBlockOutOfBounds is returned when a block's Y is outside the world build range.
+	ErrBlockOutOfBounds = errors.New("block out of bounds")
+)
+
+// Pre-built wrapped sentinel errors. Returning these from GetBlock/RequireBlockLoaded
+// keeps the hot, repeatedly-hit failure paths (e.g. pathfinding over unloaded
+// terrain) allocation-free while still satisfying errors.Is for every wrapped
+// sentinel. Go's multi-%w wrapping makes errChunkMissing match BOTH
+// ErrBlockNotFound and ErrChunkNotLoaded, preserving the previous behavior.
+var (
+	errChunkMissing = fmt.Errorf("%w: %w", ErrBlockNotFound, ErrChunkNotLoaded)
+	errYOutOfBounds = fmt.Errorf("%w: %w", ErrBlockNotFound, ErrBlockOutOfBounds)
+	errInvalidLocal = fmt.Errorf("%w: invalid local coordinates", ErrBlockNotFound)
 )
 
 type BlockPos = protocol.BlockPos
@@ -22,7 +38,10 @@ type chunkKey struct {
 }
 
 type World struct {
-	chunks      sync.Map // map[chunkKey]*Chunk
+	chunks sync.Map // map[chunkKey]*Chunk
+	// chunkCount tracks the number of live entries in chunks so that the common
+	// AddChunk path can decide whether eviction is needed without an O(n) scan.
+	chunkCount  int64
 	botMu       sync.RWMutex
 	botX        float64
 	botZ        float64
@@ -44,7 +63,12 @@ func (w *World) AddChunk(chunk *Chunk) {
 	if w == nil || chunk == nil {
 		return
 	}
-	w.chunks.Store(chunkKey{x: chunk.ChunkX, z: chunk.ChunkZ}, chunk)
+	// Swap reports whether a value was already present; only count genuinely new
+	// chunk columns. Servers re-send chunks on revisit, which must not inflate
+	// the counter.
+	if _, loaded := w.chunks.Swap(chunkKey{x: chunk.ChunkX, z: chunk.ChunkZ}, chunk); !loaded {
+		atomic.AddInt64(&w.chunkCount, 1)
+	}
 	w.evictIfNeeded()
 }
 
@@ -52,7 +76,9 @@ func (w *World) RemoveChunk(chunkX, chunkZ int) {
 	if w == nil {
 		return
 	}
-	w.chunks.Delete(chunkKey{x: chunkX, z: chunkZ})
+	if _, loaded := w.chunks.LoadAndDelete(chunkKey{x: chunkX, z: chunkZ}); loaded {
+		atomic.AddInt64(&w.chunkCount, -1)
+	}
 }
 
 // Reset clears all loaded chunks.
@@ -64,6 +90,7 @@ func (w *World) Reset() {
 		w.chunks.Delete(key)
 		return true
 	})
+	atomic.StoreInt64(&w.chunkCount, 0)
 }
 
 // ChunkCount returns the number of loaded chunks currently in memory.
@@ -71,12 +98,11 @@ func (w *World) ChunkCount() int {
 	if w == nil {
 		return 0
 	}
-	count := 0
-	w.chunks.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	return count
+	c := atomic.LoadInt64(&w.chunkCount)
+	if c < 0 {
+		return 0
+	}
+	return int(c)
 }
 
 // HasChunk reports whether the specified chunk coordinate is currently loaded.
@@ -104,12 +130,12 @@ func (w *World) RequireBlockLoaded(pos BlockPos) error {
 		return ErrChunkNotLoaded
 	}
 	if int(pos.Y) < MinY || int(pos.Y) > MaxY {
-		return fmt.Errorf("%w: y out of range", ErrBlockNotFound)
+		return errYOutOfBounds
 	}
 	chunkX := floorDiv(int(pos.X), ChunkWidth)
 	chunkZ := floorDiv(int(pos.Z), ChunkDepth)
 	if !w.IsChunkLoaded(chunkX, chunkZ) {
-		return fmt.Errorf("%w: missing chunk (%d,%d)", ErrChunkNotLoaded, chunkX, chunkZ)
+		return ErrChunkNotLoaded
 	}
 	return nil
 }
@@ -177,27 +203,43 @@ func (w *World) GetBlock(x, y, z int) (BlockState, error) {
 		return BlockState{}, ErrBlockNotFound
 	}
 	if y < MinY || y > MaxY {
-		return BlockState{}, fmt.Errorf("%w: y out of range", ErrBlockNotFound)
+		return BlockState{}, errYOutOfBounds
 	}
-
 	chunkX := floorDiv(x, ChunkWidth)
 	chunkZ := floorDiv(z, ChunkDepth)
-	localX := mod(x, ChunkWidth)
-	localZ := mod(z, ChunkDepth)
-
-	var chunk *Chunk
-	if v, ok := w.chunks.Load(chunkKey{x: chunkX, z: chunkZ}); ok {
-		chunk, _ = v.(*Chunk)
-	}
-	if chunk == nil {
-		return BlockState{}, fmt.Errorf("%w: %w (%d,%d)", ErrBlockNotFound, ErrChunkNotLoaded, chunkX, chunkZ)
-	}
-
-	block, ok := chunk.BlockAt(localX, y, localZ)
+	v, ok := w.chunks.Load(chunkKey{x: chunkX, z: chunkZ})
 	if !ok {
-		return BlockState{}, fmt.Errorf("%w: invalid local coords (%d,%d,%d)", ErrBlockNotFound, localX, y, localZ)
+		return BlockState{}, errChunkMissing
+	}
+	chunk, _ := v.(*Chunk)
+	if chunk == nil {
+		return BlockState{}, errChunkMissing
+	}
+	block, ok := chunk.BlockAt(mod(x, ChunkWidth), y, mod(z, ChunkDepth))
+	if !ok {
+		return BlockState{}, errInvalidLocal
 	}
 	return block, nil
+}
+
+// blockStateAt returns the decoded block state at absolute world coordinates
+// and whether the chunk is loaded and the coordinates are valid. It performs no
+// allocation, making it the fast path for the passability/solidity helpers,
+// which previously paid the cost of building (and discarding) a formatted error
+// for every lookup over unloaded terrain.
+func (w *World) blockStateAt(x, y, z int) (BlockState, bool) {
+	if w == nil || y < MinY || y > MaxY {
+		return BlockState{}, false
+	}
+	v, ok := w.chunks.Load(chunkKey{x: floorDiv(x, ChunkWidth), z: floorDiv(z, ChunkDepth)})
+	if !ok {
+		return BlockState{}, false
+	}
+	chunk, _ := v.(*Chunk)
+	if chunk == nil {
+		return BlockState{}, false
+	}
+	return chunk.BlockAt(mod(x, ChunkWidth), y, mod(z, ChunkDepth))
 }
 
 // GetBlockEntities returns a copy of typed block entities in a loaded chunk.
@@ -253,24 +295,24 @@ func (w *World) IsPassable(coord any, rest ...int) bool {
 	if !ok {
 		return false
 	}
-	block, err := w.GetBlock(x, y, z)
-	if err != nil {
+	block, ok := w.blockStateAt(x, y, z)
+	if !ok {
 		return false
 	}
 	return isPassableSafetyName(block.Name)
 }
 
 func (w *World) IsReplaceable(pos BlockPos) bool {
-	block, err := w.GetBlock(int(pos.X), int(pos.Y), int(pos.Z))
-	if err != nil {
+	block, ok := w.blockStateAt(int(pos.X), int(pos.Y), int(pos.Z))
+	if !ok {
 		return false
 	}
 	return isReplaceableSafetyName(block.Name)
 }
 
 func (w *World) IsSolid(pos BlockPos) bool {
-	block, err := w.GetBlock(int(pos.X), int(pos.Y), int(pos.Z))
-	if err != nil {
+	block, ok := w.blockStateAt(int(pos.X), int(pos.Y), int(pos.Z))
+	if !ok {
 		return false
 	}
 	return isSolidSafetyBlock(block)
@@ -356,12 +398,9 @@ func (w *World) evictIfNeeded() {
 	if w == nil {
 		return
 	}
-	count := 0
-	w.chunks.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	if count <= MaxLoadedChunks {
+	// Fast path: the common case (under the cap) is now O(1) instead of an
+	// O(n) sync.Map scan on every AddChunk.
+	if atomic.LoadInt64(&w.chunkCount) <= MaxLoadedChunks {
 		return
 	}
 
@@ -372,7 +411,7 @@ func (w *World) evictIfNeeded() {
 	bcx := floorDiv(bx, ChunkWidth)
 	bcz := floorDiv(bz, ChunkDepth)
 
-	for count > MaxLoadedChunks {
+	for atomic.LoadInt64(&w.chunkCount) > MaxLoadedChunks {
 		var farKey chunkKey
 		found := false
 		maxDist := -1
@@ -394,8 +433,12 @@ func (w *World) evictIfNeeded() {
 		if !found {
 			return
 		}
-		w.chunks.Delete(farKey)
-		count--
+		if _, loaded := w.chunks.LoadAndDelete(farKey); loaded {
+			atomic.AddInt64(&w.chunkCount, -1)
+		} else {
+			// Concurrently removed; stop to avoid spinning.
+			return
+		}
 	}
 }
 
@@ -439,6 +482,15 @@ func (w *World) EntityCollisions(box AABB) []Entity {
 }
 
 func (w *World) IsEntityBlocking(box AABB) bool {
-	collisions := w.EntityCollisions(box)
-	return len(collisions) > 0
+	w.entitiesMu.RLock()
+	store := w.entities
+	w.entitiesMu.RUnlock()
+	if store == nil {
+		return false
+	}
+	w.botMu.RLock()
+	botID := w.botEntityID
+	w.botMu.RUnlock()
+	// Short-circuit on the first intersecting entity; no slice is collected.
+	return store.anyIntersecting(box, botID)
 }

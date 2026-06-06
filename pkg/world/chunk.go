@@ -383,6 +383,29 @@ func (c *Chunk) BlockAt(x, y, z int) (BlockState, bool) {
 	return blockStateFromID(id), true
 }
 
+// blockNameAt returns only the registry block name at the given LOCAL chunk
+// coordinates. Unlike BlockAt it does not compute solidity, so it avoids the
+// extra registry lookups in blockStateFromID. The block search scans for name
+// matches and only needs the full BlockState on the (rare) match, so this is its
+// hot path.
+func (c *Chunk) blockNameAt(x, y, z int) (string, bool) {
+	idx, section, local, ok := sectionIndexWithConfig(x, y, z, c.Config)
+	if !ok {
+		return "", false
+	}
+	if section < 0 || section >= len(c.Sections) {
+		return "", false
+	}
+	c.mu.RLock()
+	if b, ok := c.legacy[idx]; ok {
+		c.mu.RUnlock()
+		return b.Name, true
+	}
+	id := int32(c.Sections[section].Blocks[local])
+	c.mu.RUnlock()
+	return ResolveBlockName(id), true
+}
+
 func sectionIndex(x, y, z int) (idx int, section int, local int, ok bool) {
 	return sectionIndexWithConfig(x, y, z, WorldConfig{MinY: MinY, MaxY: MaxY, SectionCount: SectionCount()})
 }

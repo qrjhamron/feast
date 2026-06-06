@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/qrjhamron/feast/pkg/protocol"
@@ -20,7 +21,13 @@ func NewDispatcher(bus *EventBus) *Dispatcher {
 
 // Dispatch decodes a packet based on state and emits typed events.
 func (d *Dispatcher) Dispatch(state State, p *protocol.RawPacket) error {
-	d.bus.Emit(PacketEvent{ID: p.ID, Data: append([]byte(nil), p.Data...)})
+	// The raw PacketEvent requires copying the packet payload to keep it valid
+	// after the read buffer is reused. Only pay that cost when something is
+	// actually subscribed to raw packets (the production client subscribes to
+	// typed events only).
+	if d.bus.has("packet") || d.bus.has("*") {
+		d.bus.Emit(PacketEvent{ID: p.ID, Data: append([]byte(nil), p.Data...)})
+	}
 
 	switch state {
 	case StateLogin:
@@ -140,6 +147,22 @@ func (d *Dispatcher) dispatchPlay(p *protocol.RawPacket) error {
 			return err
 		}
 		d.bus.Emit(ChunkLoadEvent{ChunkX: pkt.ChunkX, ChunkZ: pkt.ChunkZ})
+		return nil
+	case consts.PlayClientboundUnloadChunk:
+		// Unload Chunk (0x1F) carries Chunk Z then Chunk X as two big-endian
+		// ints. Since 1.20.2 the vanilla client reads them as a single
+		// big-endian long (a packed ChunkPos) with Z in the high 32 bits and X
+		// in the low 32 bits. Decode the 8-byte body directly to avoid pulling a
+		// protocol packet type in for two integers. See the dispatcher unload
+		// test, which locks this byte order.
+		if len(p.Data) < 8 {
+			return fmt.Errorf("unload chunk: short payload (%d bytes)", len(p.Data))
+		}
+		v := binary.BigEndian.Uint64(p.Data[:8])
+		d.bus.Emit(ChunkUnloadEvent{
+			ChunkX: int32(uint32(v)),
+			ChunkZ: int32(uint32(v >> 32)),
+		})
 		return nil
 	case consts.PlayClientboundBlockUpdate:
 		pkt := &protocol.PlayClientboundBlockUpdatePacket{}

@@ -268,6 +268,26 @@ func (s *EntityStore) Reset() {
 	s.mu.Unlock()
 }
 
+// anyIntersecting reports whether any tracked entity (other than excludeID)
+// intersects box. It returns on the first hit and allocates nothing, making it
+// the fast path for IsEntityBlocking on the navigation hot path.
+func (s *EntityStore) anyIntersecting(box AABB, excludeID int32) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, e := range s.m {
+		if e.ID == excludeID {
+			continue
+		}
+		if e.Hitbox().Intersects(box) {
+			return true
+		}
+	}
+	return false
+}
+
 func cloneEntity(e *Entity) *Entity {
 	if e == nil {
 		return nil
