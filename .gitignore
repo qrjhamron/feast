@@ -48,3 +48,4 @@ dist/
 tmp/
 .antigravitycli/
 server/
+/chat_commands
