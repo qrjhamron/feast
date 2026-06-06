@@ -28,25 +28,25 @@ func (m MoveWalkDiagonal) Cost(w *world.World, from [3]int) float64 {
 	}
 
 	dest := m.Destination(from)
-	if inWater(w, from) || inWater(w, dest) {
-		return math.Inf(1)
-	}
 
-	// Destination checks match MoveWalk.
+	// Destination cell checks (cheapest, highest-rejection) before the water
+	// probe — same final result, fewer world lookups on rejected neighbors.
 	if !w.IsPassable(dest[0], dest[1], dest[2]) {
 		return math.Inf(1)
 	}
-	if !w.IsPassable(dest[0], dest[1]+1, dest[2]) {
+	if w.IsPassable(dest[0], dest[1]-1, dest[2]) {
 		return math.Inf(1)
 	}
-	if w.IsPassable(dest[0], dest[1]-1, dest[2]) {
+	if !w.IsPassable(dest[0], dest[1]+1, dest[2]) {
 		return math.Inf(1)
 	}
 	if !w.IsPassable(from[0], from[1]+1, from[2]) {
 		return math.Inf(1)
 	}
 
-	// Prevent corner cutting: both adjacent cardinal squares must be traversable.
+	// Prevent corner cutting: both adjacent cardinal squares must be traversable
+	// (clear feet + headroom) and have a floor, so the hitbox cannot clip a
+	// diagonal corner block.
 	adj1 := [3]int{from[0] + m.Dx, from[1], from[2]}
 	adj2 := [3]int{from[0], from[1], from[2] + m.Dz}
 	if !w.IsPassable(adj1[0], adj1[1], adj1[2]) || !w.IsPassable(adj1[0], adj1[1]+1, adj1[2]) {
@@ -57,6 +57,11 @@ func (m MoveWalkDiagonal) Cost(w *world.World, from [3]int) float64 {
 	}
 	// Ensure the diagonally-adjacent floors exist too (standing height).
 	if w.IsPassable(adj1[0], adj1[1]-1, adj1[2]) || w.IsPassable(adj2[0], adj2[1]-1, adj2[2]) {
+		return math.Inf(1)
+	}
+
+	// Diagonal walking is a dry-land move; swimming handles water columns.
+	if inWater(w, from) || inWater(w, dest) {
 		return math.Inf(1)
 	}
 

@@ -88,3 +88,85 @@ func BenchmarkPlan_NegativeCoordinates(b *testing.B) {
 		cancel()
 	}
 }
+
+// buildCorridorWorld builds a single chunk with a 1-wide walled corridor along
+// x at z=8, forcing tight neighbor rejection on both sides.
+func buildCorridorWorld() *world.World {
+	w := world.NewWorld()
+	ch := world.NewChunk(0, 0)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			ch.SetBlock(x, 63, z, world.BlockState{ID: 1, Name: "stone", Solid: true})
+			ch.SurfaceY[z*world.ChunkWidth+x] = 63
+		}
+	}
+	for x := 1; x <= 14; x++ {
+		for _, z := range []int{7, 9} {
+			ch.SetBlock(x, 64, z, world.BlockState{ID: 1, Name: "stone", Solid: true})
+			ch.SetBlock(x, 65, z, world.BlockState{ID: 1, Name: "stone", Solid: true})
+		}
+	}
+	w.AddChunk(ch)
+	return w
+}
+
+// buildStairWorld builds an ascending staircase along +x (one block up per step).
+func buildStairWorld() *world.World {
+	w := world.NewWorld()
+	ch := world.NewChunk(0, 0)
+	for x := 0; x < 16; x++ {
+		h := 63 + x // each column one higher than the last
+		if h > 78 {
+			h = 78
+		}
+		for z := 0; z < 16; z++ {
+			for y := 60; y <= h; y++ {
+				ch.SetBlock(x, y, z, world.BlockState{ID: 1, Name: "stone", Solid: true})
+			}
+			ch.SurfaceY[z*world.ChunkWidth+x] = int16(h)
+		}
+	}
+	w.AddChunk(ch)
+	return w
+}
+
+func BenchmarkPlan_NarrowCorridor(b *testing.B) {
+	w := buildCorridorWorld()
+	g := goal.NewGoalBlock(14, 64, 8)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		InvalidateCache()
+		_ = Plan(ctx, 1, 64, 8, g, w)
+		cancel()
+	}
+}
+
+func BenchmarkPlan_StairTerrain(b *testing.B) {
+	w := buildStairWorld()
+	g := goal.NewGoalBlock(14, 78, 8)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		InvalidateCache()
+		_ = Plan(ctx, 1, 64, 8, g, w)
+		cancel()
+	}
+}
+
+// BenchmarkPlan_ContextCancel measures the cost of the cancellation fast-path
+// (an already-cancelled context must return promptly).
+func BenchmarkPlan_ContextCancel(b *testing.B) {
+	w := buildSingleChunkFloor(0, 0)
+	g := goal.NewGoalBlock(14, 64, 14)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		InvalidateCache()
+		_ = Plan(ctx, 1, 64, 1, g, w)
+	}
+}

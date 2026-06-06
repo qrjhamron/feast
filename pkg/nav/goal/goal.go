@@ -281,12 +281,33 @@ func (g *GoalComposite) ManhattanDistance(x, y, z int) int {
 	return worst
 }
 
+// octileHeuristic estimates the remaining traversal cost between two block
+// coordinates assuming a per-block horizontal cost of 1.0 (a cardinal walk) and
+// a diagonal premium of sqrt(2)-1. The vertical term is weighted 0.5/block.
+//
+// IMPORTANT — heuristic/planner coupling:
+//
+// This value is intentionally an OVER-estimate of the true minimum cost: the
+// cheapest way to advance one horizontal block is actually a 1-block fall
+// (MoveFall costs drop*0.5 = 0.5 per block while still moving 1 horizontally),
+// not a walk. An octile distance of 1.0/block would therefore be inadmissible
+// over downhill terrain and could return suboptimal paths. The planner
+// compensates by scaling every heuristic value by 0.5 (see planner.planInternal),
+// which yields an admissible 0.5/block lower bound. Do NOT remove that scaling
+// without revisiting the movement cost model here.
+//
+// Implementation note: integer abs plus a manual max/min avoids math.Abs/
+// math.Max/math.Min (which are not inlined and carry NaN/Inf handling). This is
+// called once per generated neighbor, so it sits on the planner's hot path.
 func octileHeuristic(x1, y1, z1, x2, y2, z2 int) float64 {
-	dx := math.Abs(float64(x1 - x2))
-	dz := math.Abs(float64(z1 - z2))
-	dy := math.Abs(float64(y1 - y2))
-	horizontal := math.Max(dx, dz) + (math.Sqrt2-1.0)*math.Min(dx, dz)
-	return horizontal + dy*0.5
+	dx := absInt(x1 - x2)
+	dz := absInt(z1 - z2)
+	dy := absInt(y1 - y2)
+	hi, lo := dx, dz
+	if dz > dx {
+		hi, lo = dz, dx
+	}
+	return float64(hi) + (math.Sqrt2-1.0)*float64(lo) + float64(dy)*0.5
 }
 
 func absInt(v int) int {

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -13,6 +14,18 @@ import (
 	"github.com/qrjhamron/feast/pkg/nav/planner"
 	"github.com/qrjhamron/feast/pkg/protocol"
 	"github.com/qrjhamron/feast/pkg/world"
+)
+
+// Sentinel errors for movement outcomes. They are unexported (the executor
+// classifies its own results into MoveResult.Reason; callers consume that),
+// but using errors.Is internally makes reason classification robust instead of
+// brittle substring matching. The user-visible Error() strings are preserved
+// for existing log/diagnostic expectations.
+var (
+	errMovementNoPath        = errors.New("movement no path")
+	errMovementTimeout       = errors.New("movement timeout exceeded")
+	errMovementStuck         = errors.New("movement stuck")
+	errMovementAuthorityBusy = errors.New("movement authority busy")
 )
 
 // executorVerbose reports whether the executor should emit per-segment debug
@@ -129,7 +142,7 @@ func (r *resultTrackingClient) TrackMovementStats(stats MovementStats) {
 func ExecuteWithResult(ctx context.Context, client Client, w *world.World, g goal.Goal, initialPath []move.Movement, opts ...MovementOptions) (MoveResult, error) {
 	if len(initialPath) == 0 {
 		cx, cy, cz, _, _ := client.GetPosition()
-		return MoveResult{Reached: false, Reason: MoveNoPath, FinalDistance: finalDistanceToGoal(cx, cy, cz, g)}, fmt.Errorf("movement no path")
+		return MoveResult{Reached: false, Reason: MoveNoPath, FinalDistance: finalDistanceToGoal(cx, cy, cz, g)}, errMovementNoPath
 	}
 	tracker := &resultTrackingClient{Client: client}
 	err := Execute(ctx, tracker, w, g, initialPath, opts...)
@@ -144,11 +157,12 @@ func ExecuteWithResult(ctx context.Context, client Client, w *world.World, g goa
 		res.Reached = true
 		return res, nil
 	}
-	msg := strings.ToLower(err.Error())
+	// Classify via sentinel identity (errors.Is) rather than substring matching,
+	// so wrapped/extended messages stay correctly categorized.
 	switch {
-	case strings.Contains(msg, "timeout") || ctx != nil && ctx.Err() == context.DeadlineExceeded:
+	case errors.Is(err, errMovementTimeout) || (ctx != nil && ctx.Err() == context.DeadlineExceeded):
 		res.Reason = MoveTimeout
-	case strings.Contains(msg, "stuck"):
+	case errors.Is(err, errMovementStuck):
 		res.Reason = MoveStuck
 	case res.CorrectionsSeen > 0:
 		res.Reason = MoveServerCorrection
@@ -290,7 +304,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 	select {
 	case <-ctx.Done():
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("movement timeout exceeded")
+			return errMovementTimeout
 		}
 		return ctx.Err()
 	default:
@@ -298,12 +312,12 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 
 	if mab, ok := client.(movementAuthorityBy); ok {
 		if !mab.AcquireMovementBy("executor") {
-			return fmt.Errorf("movement authority busy")
+			return errMovementAuthorityBusy
 		}
 		defer mab.ReleaseMovementBy("executor")
 	} else if ma, ok := client.(movementAuthority); ok {
 		if !ma.AcquireMovement() {
-			return fmt.Errorf("movement authority busy")
+			return errMovementAuthorityBusy
 		}
 		defer ma.ReleaseMovement()
 	}
@@ -425,7 +439,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					case <-ctx.Done():
 						timer.Stop()
 						if ctx.Err() == context.DeadlineExceeded {
-							return fmt.Errorf("movement timeout exceeded")
+							return errMovementTimeout
 						}
 						return ctx.Err()
 					case <-timer.C:
@@ -434,7 +448,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					select {
 					case <-ctx.Done():
 						if ctx.Err() == context.DeadlineExceeded {
-							return fmt.Errorf("movement timeout exceeded")
+							return errMovementTimeout
 						}
 						return ctx.Err()
 					default:
@@ -505,13 +519,13 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					res := planAvoid(ctx, actPos, g, w, avoid)
 					if res.Status == planner.PlanCancelled {
 						if ctx.Err() == context.DeadlineExceeded {
-							return fmt.Errorf("movement timeout exceeded")
+							return errMovementTimeout
 						}
 						return ctx.Err()
 					}
 					if len(res.Path) == 0 {
 						stats.StuckReason = fmt.Sprintf("replanning produced empty path (status=%v)", res.Status)
-						return fmt.Errorf("movement stuck: replanning produced empty path (status=%v)", res.Status)
+						return fmt.Errorf("%w: replanning produced empty path (status=%v)", errMovementStuck, res.Status)
 					}
 					path = res.Path
 					replanned = true
@@ -610,8 +624,19 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 			continue
 		}
 		if !stepAdvanced {
-			stats.StuckReason = "did not advance after retry"
-			return fmt.Errorf("movement stuck: did not advance after retry")
+			// Preserve the historic error string callers/log scrapers match on,
+			// but enrich the recorded StuckReason so diagnostics can distinguish
+			// the underlying cause: target became unsafe, server corrections, or
+			// a plain collision/blocked no-progress.
+			switch {
+			case w != nil && math.IsInf(m.Cost(w, edgeStart), 1):
+				stats.StuckReason = "did not advance after retry (target became unsafe)"
+			case stats.CorrectionsSeen > 0:
+				stats.StuckReason = "did not advance after retry (server corrections)"
+			default:
+				stats.StuckReason = "did not advance after retry (collision or blocked)"
+			}
+			return fmt.Errorf("%w: did not advance after retry", errMovementStuck)
 		}
 
 		currentPos = dest
@@ -779,9 +804,11 @@ func pruneHistory(h []positionSample, window time.Duration, now time.Time) []pos
 	if keep == 0 {
 		return h
 	}
-	out := make([]positionSample, 0, len(h)-keep)
-	out = append(out, h[keep:]...)
-	return out
+	// Shift the surviving samples down into the existing backing array rather
+	// than allocating a fresh slice. pruneHistory runs on every movement tick,
+	// so the previous make+append churned an allocation per tick on long moves.
+	n := copy(h, h[keep:])
+	return h[:n]
 }
 
 func stuck(h []positionSample, lookback time.Duration, threshold float64, now time.Time) bool {

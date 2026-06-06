@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,8 +106,19 @@ var nodePool = sync.Pool{
 
 type PriorityQueue []*Node
 
-func (pq PriorityQueue) Len() int           { return len(pq) }
-func (pq PriorityQueue) Less(i, j int) bool { return pq[i].f < pq[j].f }
+func (pq PriorityQueue) Len() int { return len(pq) }
+func (pq PriorityQueue) Less(i, j int) bool {
+	if pq[i].f != pq[j].f {
+		return pq[i].f < pq[j].f
+	}
+	// Tie-break on h: among equal-f nodes, expand the one closer to the goal
+	// first. On open/flat terrain many nodes share the same f, and without a
+	// tie-break A* fans out across the whole equal-f plateau before reaching the
+	// goal. Preferring lower h keeps the frontier pointed at the goal, which
+	// dramatically reduces expansions. This does not affect admissibility or
+	// path optimality — it only reorders nodes of identical priority.
+	return pq[i].h < pq[j].h
+}
 func (pq PriorityQueue) Swap(i, j int) {
 	pq[i], pq[j] = pq[j], pq[i]
 	pq[i].index = i
@@ -255,10 +268,13 @@ func (p *Planner) planInternal(ctx context.Context, startX, startY, startZ int, 
 	startNode.h = startH
 	startNode.f = startH
 
-	pq := make(PriorityQueue, 0)
+	pq := make(PriorityQueue, 0, 64)
 	heap.Init(&pq)
 	heap.Push(&pq, startNode)
 
+	// Maps grow on demand. They are intentionally NOT presized: bounded searches
+	// (blocked starts, unloaded-chunk walls) terminate after only a handful of
+	// expansions, and a large presize would waste ~150KB per such plan.
 	closed := make(map[[3]int]struct{})
 	openMap := make(map[[3]int]*Node)
 	openMap[startNode.pos] = startNode
@@ -421,15 +437,20 @@ func plannerGoalXZ(g goal.Goal) (x, z int) {
 }
 
 func constructPath(n *Node) []move.Movement {
-	var path []move.Movement
-	curr := n
-	for curr != nil && curr.movement != nil {
-		path = append(path, curr.movement)
-		curr = curr.parent
+	// Count first so the slice is allocated exactly once.
+	depth := 0
+	for curr := n; curr != nil && curr.movement != nil; curr = curr.parent {
+		depth++
 	}
-	// Reverse the path
-	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
-		path[i], path[j] = path[j], path[i]
+	if depth == 0 {
+		return nil
+	}
+	path := make([]move.Movement, depth)
+	// Fill back-to-front so the result is start->goal ordered without a reverse.
+	i := depth - 1
+	for curr := n; curr != nil && curr.movement != nil; curr = curr.parent {
+		path[i] = curr.movement
+		i--
 	}
 	return path
 }
@@ -528,6 +549,15 @@ func normalizeStartYToSurface(startX, startY, startZ int, w *world.World) int {
 	if w == nil {
 		return startY
 	}
+	// Prefer the caller's actual feet block whenever it is already a valid
+	// standing position. Snapping a valid (possibly underground/cave/elevated)
+	// start up to the terrain surface fabricates an impossible route — exactly
+	// the "surface Y vs feet Y" hazard documented in world/position.go. The
+	// surface fallback below is only for detached/sentinel start Y values that
+	// are not themselves standable.
+	if isStandableAt(w, startX, startY, startZ) {
+		return startY
+	}
 	surfaceY := w.GetSurfaceY(startX, startZ)
 	if surfaceY <= world.MinY-1 {
 		return startY
@@ -575,13 +605,69 @@ func maxNodesForDistance(distance int) int {
 }
 
 func buildCacheKey(start [3]int, g goal.Goal, excluded map[[3]int]struct{}) cacheKey {
-	exSig := ""
+	var b strings.Builder
+	b.Grow(48)
+	writeGoalSignature(&b, g)
 	if len(excluded) > 0 {
-		exSig = fmt.Sprintf("|ex=%d", len(excluded))
+		b.WriteString("|ex=")
+		b.WriteString(strconv.Itoa(len(excluded)))
 	}
 	return cacheKey{
 		start: start,
-		goal:  fmt.Sprintf("%T:%v%s", g, g, exSig),
+		goal:  b.String(),
+	}
+}
+
+// writeGoalSignature writes a stable, allocation-light cache signature for a
+// goal. Unlike fmt "%T:%v", it encodes the goal's *current coordinates* rather
+// than pointer identity. This is both faster (no reflection) and more correct:
+// a GoalNear keyed by entity pointer would otherwise return a stale cached path
+// after the entity moved within the cache window. Unknown goal types fall back
+// to reflection so the key stays unique (never wrong, just slower).
+func writeGoalSignature(b *strings.Builder, g goal.Goal) {
+	wi := func(prefix string, vs ...int) {
+		b.WriteString(prefix)
+		for i, v := range vs {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.Itoa(v))
+		}
+	}
+	switch v := g.(type) {
+	case *goal.GoalBlock:
+		wi("B:", v.X, v.Y, v.Z)
+	case *goal.GoalXZ:
+		wi("XZ:", v.X, v.Z)
+	case *goal.GoalY:
+		wi("Y:", v.TargetY)
+	case *goal.GoalProximity:
+		wi("P:", v.X, v.Y, v.Z)
+		b.WriteByte('/')
+		b.WriteString(strconv.FormatFloat(v.Distance, 'f', 2, 64))
+	case *goal.GoalNear:
+		// Encode the entity's current block position so a moving target
+		// invalidates the cache key instead of reusing a stale path.
+		if v == nil || v.Entity == nil {
+			b.WriteString("N:nil")
+			return
+		}
+		wi("N:", int(math.Floor(v.Entity.X)), int(math.Floor(v.Entity.Y)), int(math.Floor(v.Entity.Z)))
+		b.WriteByte('/')
+		b.WriteString(strconv.FormatFloat(v.Radius, 'f', 2, 64))
+	case *goal.GoalComposite:
+		b.WriteString("C")
+		b.WriteString(strconv.Itoa(int(v.Mode)))
+		b.WriteByte('(')
+		for i, sub := range v.Goals {
+			if i > 0 {
+				b.WriteByte('&')
+			}
+			writeGoalSignature(b, sub)
+		}
+		b.WriteByte(')')
+	default:
+		fmt.Fprintf(b, "%T:%v", g, g)
 	}
 }
 
