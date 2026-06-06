@@ -579,19 +579,7 @@ func mustPort(port string) uint16 {
 
 func (c *Client) heartbeatPacket() *protocol.PlayServerboundSetPlayerPositionAndRotationPacket {
 	st := c.PlayerState()
-	feetX := int(st.X)
-	if st.X < 0 && float64(feetX) != st.X {
-		feetX--
-	}
-	feetY := int(st.Y)
-	if st.Y < 0 && float64(feetY) != st.Y {
-		feetY--
-	}
-	feetZ := int(st.Z)
-	if st.Z < 0 && float64(feetZ) != st.Z {
-		feetZ--
-	}
-	onGround := c.onGroundAt(feetX, feetY, feetZ)
+	onGround := c.world.IsOnGround(world.Vec3{X: st.X, Y: st.Y, Z: st.Z})
 	return &protocol.PlayServerboundSetPlayerPositionAndRotationPacket{
 		X:        st.X,
 		Y:        st.Y,
@@ -655,12 +643,7 @@ func (c *Client) onGroundAt(feetX, feetY, feetZ int) bool {
 	if c.world == nil {
 		return true
 	}
-	chunkX := floorDiv(feetX, world.ChunkWidth)
-	chunkZ := floorDiv(feetZ, world.ChunkDepth)
-	if !c.world.HasChunk(chunkX, chunkZ) {
-		return true
-	}
-	return !c.world.IsPassable(feetX, feetY-1, feetZ)
+	return c.world.IsOnGround(world.StandingCenter(world.BlockPos{X: int32(feetX), Y: int32(feetY), Z: int32(feetZ)}))
 }
 
 func floorDiv(a, b int) int {

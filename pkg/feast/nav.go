@@ -334,11 +334,24 @@ func (c *Client) releaseNavigationMovement() {
 }
 
 func (c *Client) logNavFailed(reason string) {
-	log.Printf("[nav] failed reason=%s", reason)
+	// Keep LastMovementStats() truthful: an overall navigation failure must
+	// override any per-segment success left in the stats by the last executor
+	// run, otherwise callers see a stale Reached=true alongside a failure.
+	c.setNavReached(false)
+	log.Printf("[nav] result=FAIL reason=%s", reason)
 }
 
 func (c *Client) logNavArrived(x, y, z int) {
-	log.Printf("[nav] arrived at (%d,%d,%d)", x, y, z)
+	c.setNavReached(true)
+	log.Printf("[nav] result=OK arrived=(%d,%d,%d)", x, y, z)
+}
+
+// setNavReached updates only the Reached flag of the last movement stats so the
+// final navigation result is reflected without clobbering packet/distance data.
+func (c *Client) setNavReached(reached bool) {
+	c.statsTrackMu.Lock()
+	c.lastMovementStats.Reached = reached
+	c.statsTrackMu.Unlock()
 }
 
 func (c *Client) logNavPlanning(attempt, fromX, fromY, fromZ, toX, toY, toZ int) {
@@ -372,20 +385,18 @@ func (c *Client) navigationGoal(x, y, z, fallbackY int) (goal.Goal, int) {
 	return goal.NewGoalProximity(x, y, z, 2), y
 }
 
+// resolveStartY returns the Y the planner should start from. The start node must
+// always be the bot's actual feet block from the live position snapshot — never
+// the motion-blocking "surface Y" cache, which describes the top of the terrain
+// column and would teleport an underground/cave/lower bot up to the surface,
+// producing impossible routes and "stuck_after_replans". The only thing this
+// validates is that the column's chunk is loaded so the planner has data.
 func (c *Client) resolveStartY(currX, currY, currZ int) (int, bool) {
-	surfaceY := c.world.GetSurfaceY(currX, currZ)
-	if surfaceY == world.UnknownSurfaceY {
+	if c.world == nil {
 		return currY, false
 	}
-	if surfaceY <= world.MinY-1 {
-		return currY, true
-	}
-	resolved := surfaceY + 1
-	if !c.isStandableAt(currX, resolved, currZ) {
-		return currY, true
-	}
-	if currY > resolved+3 || currY < resolved-6 {
-		return resolved, true
+	if !c.world.HasChunk(blockToChunkCoord(currX), blockToChunkCoord(currZ)) {
+		return currY, false
 	}
 	return currY, true
 }
@@ -445,10 +456,7 @@ func progressiveWaypoint(currX, currZ, goalX, goalZ int, w *world.World) (int, i
 
 func (c *Client) sendOnGroundStabilize(times int) error {
 	x, y, z, yaw, pitch := c.GetPosition()
-	blockX := int(math.Floor(x))
-	blockY := int(math.Floor(y))
-	blockZ := int(math.Floor(z))
-	onGround := c.onGroundAt(blockX, blockY, blockZ)
+	onGround := c.world.IsOnGround(world.Vec3{X: x, Y: y, Z: z})
 	for i := 0; i < times; i++ {
 		pkt := &protocol.PlayServerboundSetPlayerPositionAndRotationPacket{
 			X: x, Y: y, Z: z, Yaw: yaw, Pitch: pitch, OnGround: onGround,
@@ -489,11 +497,9 @@ func (c *Client) progressiveStrideToward(ctx context.Context, targetX, _ /*targe
 		dz := float64(targetZ) - z
 		dist := math.Hypot(dx, dz)
 		if dist <= WalkSpeed {
-			blockX := targetX
-			blockY := int(math.Floor(y))
-			blockZ := targetZ
 			pkt := &protocol.PlayServerboundSetPlayerPositionAndRotationPacket{
-				X: float64(targetX), Y: y, Z: float64(targetZ), Yaw: yaw, Pitch: pitch, OnGround: c.onGroundAt(blockX, blockY, blockZ),
+				X: float64(targetX), Y: y, Z: float64(targetZ), Yaw: yaw, Pitch: pitch,
+				OnGround: c.world.IsOnGround(world.Vec3{X: float64(targetX), Y: y, Z: float64(targetZ)}),
 			}
 			if err := c.WritePacket(pkt); err != nil {
 				return err
@@ -561,11 +567,9 @@ func (c *Client) progressiveStrideToward(ctx context.Context, targetX, _ /*targe
 			// server rejects this position repeatedly.
 			nx, ny, nz = x+ux*WalkSpeed, y, z+uz*WalkSpeed
 		}
-		stepBlockX := int(math.Floor(nx))
-		stepBlockY := int(math.Floor(ny))
-		stepBlockZ := int(math.Floor(nz))
 		pkt := &protocol.PlayServerboundSetPlayerPositionAndRotationPacket{
-			X: nx, Y: ny, Z: nz, Yaw: yaw, Pitch: pitch, OnGround: c.onGroundAt(stepBlockX, stepBlockY, stepBlockZ),
+			X: nx, Y: ny, Z: nz, Yaw: yaw, Pitch: pitch,
+			OnGround: c.world.IsOnGround(world.Vec3{X: nx, Y: ny, Z: nz}),
 		}
 		if err := c.WritePacket(pkt); err != nil {
 			return err

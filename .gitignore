@@ -49,3 +49,5 @@ tmp/
 .antigravitycli/
 server/
 /chat_commands
+/advanced_controls
+

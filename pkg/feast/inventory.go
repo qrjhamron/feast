@@ -54,6 +54,18 @@ type PlacementPlan struct {
 
 var placementSequence int32
 
+// debugPlaceSurvival prints a [place-survival] log line only when Debug is enabled.
+func (c *Client) debugPlaceSurvival(format string, args ...any) {
+	if !c.opts.Debug {
+		return
+	}
+	if len(args) == 0 {
+		fmt.Printf("[place-survival] %s\n", format)
+	} else {
+		fmt.Printf("[place-survival] "+format+"\n", args...)
+	}
+}
+
 // Inventory returns a pointer to a thread-safe copy of the client's inventory state.
 func (c *Client) Inventory() *InventoryState {
 	c.inventoryMu.RLock()
@@ -323,12 +335,12 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 		c.inventoryMu.RUnlock()
 
 		if foundSlot == -1 {
-			fmt.Printf("[place-survival] result=FAIL reason=no_placeable_block_in_hotbar\n")
+			c.debugPlaceSurvival("result=FAIL reason=no_placeable_block_in_hotbar")
 			return ErrNoPlaceableBlock
 		}
 
 		if err := c.SelectHotbarSlot(ctx, foundSlot); err != nil {
-			fmt.Printf("[place-survival] result=FAIL reason=failed_to_select_hotbar_slot\n")
+			c.debugPlaceSurvival("result=FAIL reason=failed_to_select_hotbar_slot")
 			return err
 		}
 		selectedSlot = foundSlot
@@ -338,14 +350,14 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 	blockName, _ := BlockNameFromItem(heldItem)
 	countBefore := heldItem.Count
 
-	fmt.Printf("[place-survival] mode=full_inventory\n")
-	fmt.Printf("[place-survival] selected_slot=%d\n", selectedSlot)
-	fmt.Printf("[place-survival] held_item=%s\n", blockName)
-	fmt.Printf("[place-survival] target=%d,%d,%d\n", target.X, target.Y, target.Z)
+	c.debugPlaceSurvival("mode=full_inventory")
+	c.debugPlaceSurvival("selected_slot=%d", selectedSlot)
+	c.debugPlaceSurvival("held_item=%s", blockName)
+	c.debugPlaceSurvival("target=%d,%d,%d", target.X, target.Y, target.Z)
 
 	dx, dy, dz := directionOffset(face)
 	support := protocol.BlockPos{X: target.X + dx, Y: target.Y + dy, Z: target.Z + dz}
-	fmt.Printf("[place-survival] support=%d,%d,%d\n", support.X, support.Y, support.Z)
+	c.debugPlaceSurvival("support=%d,%d,%d", support.X, support.Y, support.Z)
 
 	faceStr := "top"
 	switch face {
@@ -362,48 +374,48 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 	case protocol.DirectionEast:
 		faceStr = "east"
 	}
-	fmt.Printf("[place-survival] face=%s\n", faceStr)
+	c.debugPlaceSurvival("face=%s", faceStr)
 
 	if err := c.checkPlacementValidity(target); err != nil {
-		fmt.Printf("[place-survival] result=FAIL reason=chunk_not_loaded_or_invalid\n")
+		c.debugPlaceSurvival("result=FAIL reason=chunk_not_loaded_or_invalid")
 		return err
 	}
 	if c.blockCenterDistance(target) > 6.0 {
-		fmt.Printf("[place-survival] result=FAIL reason=target_out_of_reach\n")
+		c.debugPlaceSurvival("result=FAIL reason=target_out_of_reach")
 		return ErrTargetOutOfReach
 	}
 
 	oldState, err := c.world.GetBlock(int(target.X), int(target.Y), int(target.Z))
 	if err != nil {
-		fmt.Printf("[place-survival] result=FAIL reason=world_get_block_failed\n")
+		c.debugPlaceSurvival("result=FAIL reason=world_get_block_failed")
 		return err
 	}
-	fmt.Printf("[place-survival] old_state=%s\n", oldState.Name)
+	c.debugPlaceSurvival("old_state=%s", oldState.Name)
 	if !c.world.IsReplaceable(world.BlockPos(target)) {
-		fmt.Printf("[place-survival] result=FAIL reason=target_not_replaceable\n")
+		c.debugPlaceSurvival("result=FAIL reason=target_not_replaceable")
 		return ErrBlockNotReplaceable
 	}
 
 	if err := c.world.RequireBlockLoaded(world.BlockPos(support)); err != nil {
-		fmt.Printf("[place-survival] result=FAIL reason=support_chunk_not_loaded\n")
+		c.debugPlaceSurvival("result=FAIL reason=support_chunk_not_loaded")
 		return err
 	}
 	supportState, err := c.world.GetBlock(int(support.X), int(support.Y), int(support.Z))
 	if err != nil {
-		fmt.Printf("[place-survival] result=FAIL reason=support_block_not_found\n")
+		c.debugPlaceSurvival("result=FAIL reason=support_block_not_found")
 		return err
 	}
 	if !c.world.IsSolid(world.BlockPos(support)) {
-		fmt.Printf("[place-survival] result=FAIL reason=support_block_not_solid\n")
+		c.debugPlaceSurvival("result=FAIL reason=support_block_not_solid")
 		return fmt.Errorf("%w: %s", ErrNoSupportBlock, supportState.Name)
 	}
 
 	if c.OverlapsPlayer(target) {
-		fmt.Printf("[place-survival] result=FAIL reason=overlaps_player_hitbox\n")
+		c.debugPlaceSurvival("result=FAIL reason=overlaps_player_hitbox")
 		return fmt.Errorf("placement target overlaps player hitbox")
 	}
 	if c.world.IsEntityBlocking(blockAABB(target)) {
-		fmt.Printf("[place-survival] result=FAIL reason=overlaps_entity_hitbox\n")
+		c.debugPlaceSurvival("result=FAIL reason=overlaps_entity_hitbox")
 		return fmt.Errorf("placement target overlaps blocking entity hitbox")
 	}
 
@@ -452,9 +464,9 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 		InsideBlock: false,
 		Sequence:    seq,
 	})
-	fmt.Printf("[place-survival] packet_sent=%v\n", err == nil)
+	c.debugPlaceSurvival("packet_sent=%v", err == nil)
 	if err != nil {
-		fmt.Printf("[place-survival] result=FAIL reason=packet_write_failed\n")
+		c.debugPlaceSurvival("result=FAIL reason=packet_write_failed")
 		return err
 	}
 
@@ -465,10 +477,10 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 	for !updateReceived {
 		select {
 		case <-ctx.Done():
-			fmt.Printf("[place-survival] result=FAIL reason=context_cancelled\n")
+			c.debugPlaceSurvival("result=FAIL reason=context_cancelled")
 			return ctx.Err()
 		case <-deadline.C:
-			fmt.Printf("[place-survival] result=FAIL reason=block_update_timeout\n")
+			c.debugPlaceSurvival("result=FAIL reason=block_update_timeout")
 			return ErrBlockUpdateTimeout
 		case ev := <-slotCh:
 			slotUpdateReceived = true
@@ -490,35 +502,35 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 		}
 	}
 
-	fmt.Printf("[place-survival] block_update_received=%v\n", updateReceived)
+	c.debugPlaceSurvival("block_update_received=%v", updateReceived)
 
 	newState, err := c.world.GetBlock(int(target.X), int(target.Y), int(target.Z))
 	if err != nil {
-		fmt.Printf("[place-survival] result=FAIL reason=world_get_block_failed\n")
+		c.debugPlaceSurvival("result=FAIL reason=world_get_block_failed")
 		return err
 	}
-	fmt.Printf("[place-survival] new_state=%s\n", newState.Name)
+	c.debugPlaceSurvival("new_state=%s", newState.Name)
 
 	_, err = c.world.GetBlock(int(target.X), int(target.Y), int(target.Z))
 	rollbackDetected := err == nil && c.world.IsReplaceable(world.BlockPos(target))
-	fmt.Printf("[place-survival] rollback_detected=%v\n", rollbackDetected)
+	c.debugPlaceSurvival("rollback_detected=%v", rollbackDetected)
 
 	c.inventoryMu.RLock()
 	countAfter := c.inventory.Slots[heldSlot].Count
 	c.inventoryMu.RUnlock()
-	fmt.Printf("[place-survival] inventory_count_before=%d\n", countBefore)
-	fmt.Printf("[place-survival] inventory_count_after=%d\n", countAfter)
+	c.debugPlaceSurvival("inventory_count_before=%d", countBefore)
+	c.debugPlaceSurvival("inventory_count_after=%d", countAfter)
 	if slotUpdateReceived && countAfter >= countBefore {
-		fmt.Printf("[place-survival] result=FAIL reason=inventory_count_not_decremented\n")
+		c.debugPlaceSurvival("result=FAIL reason=inventory_count_not_decremented")
 		return ErrPlacementRolledBack
 	}
 
 	if c.world.IsReplaceable(world.BlockPos(target)) || rollbackDetected {
-		fmt.Printf("[place-survival] result=FAIL reason=rollback_or_no_update\n")
+		c.debugPlaceSurvival("result=FAIL reason=rollback_or_no_update")
 		return ErrPlacementRolledBack
 	}
 
-	fmt.Printf("[place-survival] result=PASS\n")
+	c.debugPlaceSurvival("result=PASS")
 	return nil
 }
 

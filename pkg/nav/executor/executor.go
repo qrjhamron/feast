@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -13,6 +14,13 @@ import (
 	"github.com/qrjhamron/feast/pkg/protocol"
 	"github.com/qrjhamron/feast/pkg/world"
 )
+
+// executorVerbose reports whether the executor should emit per-segment debug
+// detail. It stays quiet by default to avoid flooding logs and only enables
+// detail when FEAST_DEBUG=true, matching the rest of the core diagnostics.
+func executorVerbose() bool {
+	return os.Getenv("FEAST_DEBUG") == "true"
+}
 
 type MovementProfile string
 
@@ -56,6 +64,14 @@ type MovementStats struct {
 	LastCorrectionY     float64
 	LastCorrectionZ     float64
 	StuckReason         string
+	// GoalSatisfied reports whether the goal was actually satisfied at the end
+	// of this executor segment. Reached only means the segment finished without
+	// error (the path was consumed); it does NOT imply the route goal was met.
+	GoalSatisfied bool
+	// Noop reports a segment that finished successfully without sending any
+	// movement packets (the bot was already at the node). It must not be read
+	// as a real movement success.
+	Noop bool
 }
 
 type MoveErrorReason string
@@ -237,6 +253,8 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 		} else if stats.StuckReason == "" {
 			stats.StuckReason = err.Error()
 		}
+		stats.GoalSatisfied = g != nil && g.Satisfied(int(math.Floor(cx)), int(math.Floor(cy)), int(math.Floor(cz)))
+		stats.Noop = err == nil && stats.PacketsSent == 0
 		if st, ok := client.(interface{ TrackMovementStats(MovementStats) }); ok {
 			st.TrackMovementStats(stats)
 		}
@@ -246,11 +264,18 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 			nodeStr = fmt.Sprintf("(%d,%d,%d)", stats.FirstTargetNodeX, stats.FirstTargetNodeY, stats.FirstTargetNodeZ)
 			centerStr = fmt.Sprintf("(%.3f,%.3f,%.3f)", firstTargetX, firstTargetY, firstTargetZ)
 		}
-		fmt.Printf("[move] local_astar_node=%s\n", nodeStr)
-		fmt.Printf("[move] executor_target_center=%s\n", centerStr)
-		fmt.Printf("[move] distance_traveled=%.3f\n", stats.DistanceTraveled)
-		fmt.Printf("[move] corrections_seen=%d\n", stats.CorrectionsSeen)
-		fmt.Printf("[move] reached=%t\n", stats.Reached)
+		if executorVerbose() {
+			fmt.Printf("[move] local_astar_node=%s\n", nodeStr)
+			fmt.Printf("[move] executor_target_center=%s\n", centerStr)
+			fmt.Printf("[move] distance_traveled=%.3f\n", stats.DistanceTraveled)
+		}
+		// step_reached: this executor segment finished without error.
+		// goal_satisfied: whether the overall goal is actually met (the route
+		// result, which the navigation loop owns). step_noop: a no-op segment.
+		if executorVerbose() {
+			fmt.Printf("[move] step_reached=%t goal_satisfied=%t step_noop=%t corrections=%d distance=%.3f\n",
+				stats.Reached, stats.GoalSatisfied, stats.Noop, stats.CorrectionsSeen, stats.DistanceTraveled)
+		}
 	}()
 
 	var lastSeq uint64
@@ -528,10 +553,17 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 					ty = destY
 					yPos = ty
 				}
-				onGround := onGroundAt(w, int(math.Floor(tx)), int(math.Floor(ty)), int(math.Floor(tz)))
-				if onGround {
+				// Zero vertical velocity once a support block sits below the
+				// feet. Note this is a physics decision, not the wire flag.
+				if onGroundAt(w, int(math.Floor(tx)), int(math.Floor(ty)), int(math.Floor(tz))) {
 					yVel = 0
 				}
+				// on_ground for the packet must reflect whether the feet are
+				// actually resting on a block top (fractional Y ~ 0 with support
+				// below). Reporting on_ground=true while Y is still descending is
+				// what triggers Paper movement corrections. Jumps are never on
+				// the ground until they land and re-snap to an integer Y.
+				onGround := !isJump && w.IsOnGround(world.Vec3{X: tx, Y: ty, Z: tz})
 
 				var targetYaw float32
 				if rm, ok := m.(move.RotatingMovement); ok {

@@ -297,9 +297,13 @@ func TestExecute_OnGroundDerivedFromWorldBelow(t *testing.T) {
 		feetX := int(math.Floor(pp.X))
 		feetY := int(math.Floor(pp.Y))
 		feetZ := int(math.Floor(pp.Z))
-		want := !w.IsPassable(feetX, feetY-1, feetZ)
+		_, _, _ = feetX, feetY, feetZ
+		// on_ground must reflect the fractional-aware resting check: support
+		// below AND feet resting on the block top. Deriving it purely from the
+		// block below (ignoring a still-descending Y) is the bug Phase 3 fixes.
+		want := w.IsOnGround(world.Vec3{X: pp.X, Y: pp.Y, Z: pp.Z})
 		if pp.OnGround != want {
-			t.Fatalf("expected OnGround=%v from world check", want)
+			t.Fatalf("expected OnGround=%v from fractional-aware world check (y=%.3f)", want, pp.Y)
 		}
 		return
 	}
