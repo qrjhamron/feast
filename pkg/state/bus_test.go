@@ -59,3 +59,22 @@ func TestEventBus_OnRejectsNilHandler(t *testing.T) {
 		t.Fatalf("expected error for nil handler")
 	}
 }
+
+func TestEventBus_EmitRecoversPanic(t *testing.T) {
+	bus := NewEventBus()
+	called := 0
+
+	_, _ = bus.On("chat", func(e Event) {
+		panic("boom")
+	})
+	_, _ = bus.On("chat", func(e Event) {
+		called++
+	})
+
+	// This should not panic
+	bus.Emit(ChatEvent{Sender: "a", Message: "x"})
+
+	if called != 1 {
+		t.Fatalf("expected second handler to run despite first panicking, got %d", called)
+	}
+}

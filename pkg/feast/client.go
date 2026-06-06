@@ -3,7 +3,6 @@ package feast
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -20,17 +19,24 @@ import (
 
 const protocolVersion765 int32 = 765
 
-// Options configures an internal Feast client.
+// Options configures a FeastGo client connection and behavior.
 type Options struct {
-	Host         string
-	Port         string
-	Username     string
-	Debug        bool
+	// Host is the server hostname or IP address.
+	Host string
+	// Port is the server port (typically "25565").
+	Port string
+	// Username is the player's in-game name.
+	Username string
+	// Debug enables verbose client logging.
+	Debug bool
+	// DebugPackets enables logging of all sent/received packets.
 	DebugPackets bool
-	Logger       func(LogEvent)
+	// Logger is an optional custom log handler.
+	Logger func(LogEvent)
 }
 
-// Client orchestrates conn/state/dispatch flows.
+// Client represents an active FeastGo bot connection. It provides methods to
+// interact with the world, entities, and inventory, and dispatches events.
 type Client struct {
 	opts       Options
 	conn       *feastconn.Conn
@@ -44,6 +50,9 @@ type Client struct {
 	stopMu           sync.Mutex
 	stopped          bool
 	once             sync.Once
+	teardownOnce     sync.Once
+	teardownDone     chan struct{}
+	managedGoids     sync.Map
 	runtimeCtx       context.Context
 	runtimeCancel    context.CancelFunc
 	shutdownStatus   ShutdownStatus
@@ -128,17 +137,26 @@ type HPAStats struct {
 
 // PlayerState is the client's current best-known player state.
 type PlayerState struct {
-	UUID       [16]byte
-	EntityID   int32
-	X          float64
-	Y          float64
-	Z          float64
-	Yaw        float32
-	Pitch      float32
-	VelocityY  float64
-	OnGround   bool
-	Health     float32
-	Food       int32
+	// UUID is the player's unique identifier.
+	UUID [16]byte
+	// EntityID is the runtime ID of the player entity.
+	EntityID int32
+	// X, Y, Z are the player's current coordinates.
+	X float64
+	Y float64
+	Z float64
+	// Yaw and Pitch define the player's rotation.
+	Yaw   float32
+	Pitch float32
+	// VelocityY tracks vertical falling speed.
+	VelocityY float64
+	// OnGround is true if the player is touching solid blocks.
+	OnGround bool
+	// Health tracks the player's current health.
+	Health float32
+	// Food tracks the player's food level.
+	Food int32
+	// Saturation tracks food saturation.
 	Saturation float32
 }
 
@@ -156,6 +174,7 @@ func NewClient(opts Options) *Client {
 		movementProfile:   MovementBotLike,
 		containerSlots:    make(map[int32]map[int]ItemStack),
 		containerStateIDs: make(map[int32]int32),
+		teardownDone:      make(chan struct{}),
 	}
 	c.world.SetEntityStore(c.entities)
 	c.initHPA()
@@ -193,22 +212,24 @@ func (c *Client) initHPA() {
 	})
 }
 
-// On registers a state event handler.
+// Advanced: On registers a raw state event handler.
 func (c *Client) On(eventType string, handler func(state.Event)) (int, error) {
 	return c.bus.On(eventType, handler)
 }
 
 // World returns the current world state handle.
+// Advanced: This provides direct access to the chunk array and raw block data.
 func (c *Client) World() *world.World {
 	return c.world
 }
 
-// HPANav returns the HPA* navigator handle.
+// Advanced: HPANav returns the internal HPA* navigator handle.
 func (c *Client) HPANav() *hpa.HPANavigator {
 	return c.hpaNav
 }
 
 // Entities returns the tracked entity store.
+// Advanced: This provides direct access to the raw entity map.
 func (c *Client) Entities() *world.EntityStore {
 	return c.entities
 }
@@ -231,7 +252,7 @@ func (c *Client) EntityID() int32 {
 	return st.EntityID
 }
 
-// WritePacket sends one packet through the current transport.
+// Advanced: WritePacket sends one raw packet through the current transport.
 func (c *Client) WritePacket(p protocol.Packet) error {
 	return c.writePacket(p)
 }
@@ -298,17 +319,46 @@ func (c *Client) Connect() error {
 }
 
 // ErrClientClosed is returned when a write is attempted after the client has been shut down.
-var ErrClientClosed = errors.New("client closed")
+// ErrClientClosed is defined in errors.go
 
 // Disconnect stops loops and closes the underlying transport.
+//
+// Disconnect is idempotent and safe to call multiple times, including
+// concurrently. When called from a non-managed goroutine (the common case) it
+// blocks until all client goroutines have drained and the socket is closed, so
+// [Client.ShutdownStatus] is fully complete on return.
+//
+// When called from within a client-managed goroutine — for example from an
+// event handler that runs on the read/heartbeat/chunk/navigation loop —
+// Disconnect cannot wait for that goroutine to finish without deadlocking on
+// itself. In that case it signals shutdown, runs teardown in the background,
+// and returns immediately; teardown completes once the calling goroutine
+// unwinds and the loops drain.
+//
 // Shutdown ordering:
 //  1. Set client state to disconnected (prevents new writes).
-//  2. Signal stop channel (stops tick/heartbeat and read loops).
-//  3. Stop navigation executor.
+//  2. Cancel runtime context and signal the stop channel (stops all loops).
+//  3. Stop navigation and unblock any in-flight socket read/write.
 //  4. Wait for all goroutines to finish.
-//  5. Close socket last.
-//  6. Clean up world state.
+//  5. Close the socket last.
+//  6. Reset world/entity/event-bus state.
 func (c *Client) Disconnect() error {
+	c.signalShutdown()
+	if c.inManagedGoroutine() {
+		// Re-entrant call from a client-owned goroutine: waiting on c.wg here
+		// would wait on the caller itself. Run teardown asynchronously instead.
+		go c.runTeardown()
+		return nil
+	}
+	c.runTeardown()
+	<-c.teardownDone
+	return nil
+}
+
+// signalShutdown performs the non-blocking shutdown signalling steps exactly
+// once: marking the client stopped, cancelling the runtime context, closing the
+// stop channel, stopping navigation, and unblocking any in-flight socket I/O.
+func (c *Client) signalShutdown() {
 	c.once.Do(func() {
 		// Step 1: Mark disconnected state.
 		c.stopMu.Lock()
@@ -335,7 +385,14 @@ func (c *Client) Disconnect() error {
 		if c.conn != nil {
 			_ = c.conn.SetDeadline(time.Now())
 		}
+	})
+}
 
+// runTeardown waits for all client goroutines to drain, closes the socket, and
+// resets runtime state exactly once. It closes c.teardownDone on completion so
+// that blocking callers of Disconnect can observe full shutdown.
+func (c *Client) runTeardown() {
+	c.teardownOnce.Do(func() {
 		// Step 4: Wait for loops to drain (they check stopCh).
 		c.wg.Wait()
 		c.stopMu.Lock()
@@ -354,6 +411,7 @@ func (c *Client) Disconnect() error {
 		c.shutdownStatus.SocketClosed = true
 		c.stopMu.Unlock()
 
+		// Step 6: Reset runtime state.
 		if c.hpaUpdater != nil {
 			c.hpaUpdater.Stop()
 		}
@@ -366,8 +424,9 @@ func (c *Client) Disconnect() error {
 		c.bus.Reset()
 		c.initHPA()
 		c.registerStateHandlers()
+
+		close(c.teardownDone)
 	})
-	return nil
 }
 
 // Close closes the client connection.
@@ -380,26 +439,26 @@ func (c *Client) CurrentState() state.State {
 	return c.currentState()
 }
 
-// HPAInvalidations returns the count of triggered HPA invalidations.
+// Advanced: HPAInvalidations returns the count of triggered HPA invalidations.
 func (c *Client) HPAInvalidations() int32 {
 	return atomic.LoadInt32(&c.hpaInvalidations)
 }
 
-// WorldGraph returns the internal AbstractGraph handle.
+// Advanced: WorldGraph returns the internal AbstractGraph handle.
 func (c *Client) WorldGraph() *hpa.AbstractGraph {
 	c.hpaMu.RLock()
 	defer c.hpaMu.RUnlock()
 	return c.hpaGraph
 }
 
-// WorldClusters returns the internal ClusterManager handle.
+// Advanced: WorldClusters returns the internal ClusterManager handle.
 func (c *Client) WorldClusters() *hpa.ClusterManager {
 	c.hpaMu.RLock()
 	defer c.hpaMu.RUnlock()
 	return c.hpaClusters
 }
 
-// Events returns the client's event bus.
+// Advanced: Events returns the client's internal event bus.
 func (c *Client) Events() *state.EventBus {
 	return c.bus
 }
@@ -423,7 +482,7 @@ func (c *Client) Stats() Stats {
 	return stats
 }
 
-// HPAStats returns current HPA* debug counters.
+// Advanced: HPAStats returns a snapshot of the current HPA* graph state.
 func (c *Client) HPAStats() HPAStats {
 	stats := HPAStats{}
 	if c.world != nil {
@@ -449,12 +508,12 @@ func (c *Client) ShutdownStatus() ShutdownStatus {
 	return c.shutdownStatus
 }
 
-// RebuildHPA rebuilds all currently tracked HPA* clusters.
+// Advanced: RebuildHPA rebuilds all currently tracked HPA* clusters.
 func (c *Client) RebuildHPA() {
 	_ = c.RebuildHPAWithContext(context.Background())
 }
 
-// RebuildHPAWithContext rebuilds all currently tracked HPA* clusters.
+// Advanced: RebuildHPAWithContext rebuilds all currently tracked HPA* clusters.
 func (c *Client) RebuildHPAWithContext(ctx context.Context) error {
 	c.hpaMu.RLock()
 	builder := c.hpaBuilder
@@ -465,12 +524,12 @@ func (c *Client) RebuildHPAWithContext(ctx context.Context) error {
 	return nil
 }
 
-// RebuildHPAAround rebuilds HPA* clusters for loaded chunks near a block position.
+// Advanced: RebuildHPAAround rebuilds HPA* clusters for loaded chunks near a block position.
 func (c *Client) RebuildHPAAround(blockX, blockZ, radiusChunks int) {
 	_ = c.RebuildHPAAroundWithContext(context.Background(), blockX, blockZ, radiusChunks)
 }
 
-// RebuildHPAAroundWithContext rebuilds HPA* clusters for loaded chunks near a block position.
+// Advanced: RebuildHPAAroundWithContext rebuilds HPA* clusters for loaded chunks near a block position.
 func (c *Client) RebuildHPAAroundWithContext(ctx context.Context, blockX, blockZ, radiusChunks int) error {
 	if c.world == nil || radiusChunks < 0 {
 		return nil
@@ -543,7 +602,7 @@ func (c *Client) heartbeatPacket() *protocol.PlayServerboundSetPlayerPositionAnd
 	}
 }
 
-// AcquireMovement grants exclusive movement authority to navigation paths.
+// Advanced: AcquireMovement grants exclusive movement authority to navigation paths.
 func (c *Client) AcquireMovement() bool {
 	c.moveMu.Lock()
 	defer c.moveMu.Unlock()
@@ -554,14 +613,14 @@ func (c *Client) AcquireMovement() bool {
 	return true
 }
 
-// ReleaseMovement relinquishes navigation movement authority.
+// Advanced: ReleaseMovement relinquishes navigation movement authority.
 func (c *Client) ReleaseMovement() {
 	c.moveMu.Lock()
 	c.moving = false
 	c.moveMu.Unlock()
 }
 
-// AcquireMovementBy grants exclusive movement authority.
+// Advanced: AcquireMovementBy grants exclusive movement authority.
 func (c *Client) AcquireMovementBy(_ string) bool {
 	c.moveMu.Lock()
 	defer c.moveMu.Unlock()
@@ -572,7 +631,7 @@ func (c *Client) AcquireMovementBy(_ string) bool {
 	return true
 }
 
-// ReleaseMovementBy relinquishes movement authority.
+// Advanced: ReleaseMovementBy relinquishes movement authority.
 func (c *Client) ReleaseMovementBy(by string) {
 	c.moveMu.Lock()
 	c.moving = false
@@ -637,7 +696,7 @@ func (c *Client) currentState() state.State {
 
 func (c *Client) requireConn() error {
 	if c.conn == nil {
-		return fmt.Errorf("connection not initialized")
+		return ErrNotConnected
 	}
 	return nil
 }
@@ -648,7 +707,7 @@ func ticker50ms() *time.Ticker {
 
 func (c *Client) writePacket(p protocol.Packet) error {
 	if c.conn == nil {
-		return fmt.Errorf("connection not initialized")
+		return ErrNotConnected
 	}
 	// Check if we are shutting down before attempting a write.
 	c.stopMu.Lock()
@@ -692,7 +751,7 @@ func (c *Client) writePacket(p protocol.Packet) error {
 
 func (c *Client) readPacket() (*protocol.RawPacket, error) {
 	if c.conn == nil {
-		return nil, fmt.Errorf("connection not initialized")
+		return nil, ErrNotConnected
 	}
 	raw, err := c.conn.ReadPacket()
 	if err != nil {

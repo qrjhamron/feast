@@ -17,20 +17,17 @@ import (
 	"github.com/qrjhamron/feast/pkg/world"
 )
 
-// NavigateTo2 cancels any existing navigation and starts a new one to the given coordinates.
+// Advanced: NavigateTo2 cancels any existing navigation and starts a new one to the given coordinates.
 // It is the low-level coordinate version; prefer [Client.NavigateTo] for goal-based navigation.
 func (c *Client) NavigateTo2(x, y, z int) error {
-	c.stateMu.RLock()
-	positionSynced := c.positionSynced
-	c.stateMu.RUnlock()
-	if !positionSynced {
-		c.logNavFailed("position_not_synced")
-		return fmt.Errorf("position not synced yet")
+	if !c.PositionSynced() {
+		return ErrPositionNotSynced
 	}
-	if c.world == nil {
+	w := c.World()
+	if w == nil {
 		c.logNavFailed("world_not_ready")
 		c.bus.Emit(state.NavFailedEvent{Reason: "world not ready"})
-		return fmt.Errorf("world not ready")
+		return ErrNotReady
 	}
 
 	c.StopNavigation()
@@ -55,6 +52,7 @@ func (c *Client) NavigateTo2(x, y, z int) error {
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
+		defer c.markManagedGoroutine()()
 		defer c.clearNavigationContext(ctx)
 		if !c.acquireNavigationMovement(ctx, time.Second) {
 			c.logNavFailed("movement_authority_busy")
@@ -471,8 +469,9 @@ func (c *Client) progressiveStrideToward(ctx context.Context, targetX, _ /*targe
 	x0, _, z0, _, _ := c.GetPosition()
 	feetX := int(math.Floor(x0))
 	feetZ := int(math.Floor(z0))
-	if !c.world.HasChunk(blockToChunkCoord(feetX), blockToChunkCoord(feetZ)) {
-		return fmt.Errorf("chunk not loaded at feet")
+	cx, cz := blockToChunkCoord(feetX), blockToChunkCoord(feetZ)
+	if !c.World().IsChunkLoaded(cx, cz) {
+		return ErrChunkNotLoaded
 	}
 
 	seq := atomic.LoadUint64(&c.positionSyncSeq)
@@ -596,6 +595,7 @@ type footprintCell struct {
 
 func buildPathFootprint(start [3]int, path []move.Movement) map[footprintCell]struct{} {
 	out := make(map[footprintCell]struct{}, len(path)*2)
+	out[footprintCell{x: start[0], y: start[1], z: start[2]}] = struct{}{}
 	pos := start
 	for _, m := range path {
 		switch mm := m.(type) {
@@ -704,7 +704,7 @@ func (n *navEventingClient) WritePacket(p protocol.Packet) error {
 	return n.c.WritePacket(p)
 }
 
-// StopNavigation cancels the current navigation context if one exists.
+// Advanced: StopNavigation cleanly cancels the active navigation task.
 func (c *Client) StopNavigation() {
 	c.navMu.Lock()
 	defer c.navMu.Unlock()

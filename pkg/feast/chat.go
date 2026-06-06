@@ -16,7 +16,7 @@ func (c *Client) SendChat(message string) error {
 	}
 
 	if c.CurrentState() != state.StatePlay {
-		return fmt.Errorf("cannot send chat: not in play state (current: %v)", c.CurrentState())
+		return fmt.Errorf("%w (current: %v)", ErrNotReady, c.CurrentState())
 	}
 
 	// In offline mode without signed chat, keeping count at 0 is often safer

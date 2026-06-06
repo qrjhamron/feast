@@ -2,7 +2,6 @@ package feast
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"sync/atomic"
@@ -15,19 +14,7 @@ import (
 )
 
 var (
-	ErrHeldItemUnknown     = errors.New("held item unknown")
-	ErrChunkNotLoaded      = world.ErrChunkNotLoaded
-	ErrBlockNotReplaceable = errors.New("block not replaceable")
-	ErrNoSupportBlock      = errors.New("no support block")
-	ErrTargetOutOfReach    = errors.New("target out of reach")
-	ErrNoPlaceableBlock    = errors.New("no placeable block")
-	ErrPlacementRolledBack = errors.New("placement rolled back")
-	ErrBlockUpdateTimeout  = errors.New("block update timeout")
-	ErrBlockAir            = errors.New("block is air")
-	ErrBlockUnbreakable    = errors.New("block unbreakable")
-	ErrBreakTargetUnsafe   = errors.New("break target unsafe")
-	ErrBreakOutOfReach     = errors.New("break target out of reach")
-	ErrBreakRolledBack     = errors.New("break rolled back")
+// Errors moved to errors.go
 )
 
 const (
@@ -39,13 +26,18 @@ const (
 	CreativeSmokeItemID   = int32(1)
 )
 
+// ItemStack represents an item in an inventory slot.
 type ItemStack = registry.ItemStack
 
+// InventoryState represents a thread-safe snapshot of the bot's inventory.
 type InventoryState struct {
+	// SelectedHotbarSlot is the currently active hotbar slot (0-8).
 	SelectedHotbarSlot int
-	Slots              map[int]ItemStack
+	// Slots contains all items, keyed by slot index.
+	Slots map[int]ItemStack
 }
 
+// PlacementPlan describes the sequence of actions and expected outcomes for placing a block.
 type PlacementPlan struct {
 	Target         protocol.BlockPos
 	Support        protocol.BlockPos
@@ -255,13 +247,13 @@ func (c *Client) PlaceBlock(target protocol.BlockPos, face byte) error {
 
 func (c *Client) requireCoreActionReady() error {
 	if c.conn == nil {
-		return fmt.Errorf("client not connected")
+		return ErrNotConnected
 	}
 	if c.CurrentState() != state.StatePlay {
-		return fmt.Errorf("client not ready: state=%v", c.CurrentState())
+		return fmt.Errorf("%w: state=%v", ErrNotReady, c.CurrentState())
 	}
 	if !c.PositionSynced() {
-		return fmt.Errorf("position not synced")
+		return ErrPositionNotSynced
 	}
 	return nil
 }
@@ -306,7 +298,7 @@ func directionOffset(dir protocol.Direction) (dx, dy, dz int32) {
 	}
 }
 
-// PlaceBlockSurvivalInternal executes survival mode placement.
+// Advanced: PlaceBlockSurvivalInternal performs a block placement and waits for confirmation.
 func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol.BlockPos, face protocol.Direction) error {
 	if err := c.requireCoreActionReady(); err != nil {
 		return err
@@ -530,6 +522,7 @@ func (c *Client) PlaceBlockSurvivalInternal(ctx context.Context, target protocol
 	return nil
 }
 
+// Advanced: PrepareCreativeSmokePlacement generates a plan for creative block placement.
 func (c *Client) PrepareCreativeSmokePlacement(target protocol.BlockPos) (PlacementPlan, error) {
 	if c.world == nil {
 		return PlacementPlan{}, world.ErrBlockNotFound
@@ -580,6 +573,7 @@ func (c *Client) PrepareCreativeSmokePlacement(target protocol.BlockPos) (Placem
 	}, nil
 }
 
+// Advanced: ExecuteCreativeSmokePlacement executes a pre-planned creative placement.
 func (c *Client) ExecuteCreativeSmokePlacement(plan PlacementPlan) error {
 	if err := c.writePacket(&protocol.PlayServerboundSetCreativeModeSlotPacket{
 		Slot: plan.InventorySlot,

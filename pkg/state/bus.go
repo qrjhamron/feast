@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -104,11 +105,20 @@ func (b *EventBus) Emit(event Event) {
 	wildcard := snapshotHandlers(b.handlers["*"])
 	b.mu.RUnlock()
 	for _, h := range target {
-		h(event)
+		safeInvoke(h, event)
 	}
 	for _, h := range wildcard {
-		h(event)
+		safeInvoke(h, event)
 	}
+}
+
+func safeInvoke(h Handler, event Event) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("panic in event handler: %v", r)
+		}
+	}()
+	h(event)
 }
 
 func snapshotHandlers(hs map[int]Handler) []Handler {

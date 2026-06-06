@@ -1,9 +1,13 @@
 package feast
 
 import (
+	"errors"
+	"io"
+	"net"
 	"testing"
 	"time"
 
+	feastconn "github.com/qrjhamron/feast/pkg/conn"
 	"github.com/qrjhamron/feast/pkg/state"
 	"github.com/qrjhamron/feast/pkg/world"
 )
@@ -43,8 +47,8 @@ func TestNavigateToRequiresPositionSync(t *testing.T) {
 	c := NewClient(Options{})
 
 	err := c.NavigateTo2(2, 64, 1)
-	if err == nil || err.Error() != "position not synced yet" {
-		t.Fatalf("NavigateTo2 error=%v want position not synced yet", err)
+	if !errors.Is(err, ErrPositionNotSynced) {
+		t.Fatalf("NavigateTo2 error=%v want ErrPositionNotSynced", err)
 	}
 }
 
@@ -97,5 +101,65 @@ func TestDisconnect_ResetsWorldEntitiesAndBusHandlers(t *testing.T) {
 	}
 	if got := c.bus.HandlerCount(); got != base {
 		t.Fatalf("unexpected handler count after disconnect reset: got %d want %d", got, base)
+	}
+}
+
+func TestNavigateTo_PathOverRemovedSupportReplans(t *testing.T) {
+	c := NewClient(Options{})
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	c.conn = feastconn.New(a)
+	go func() { _, _ = io.Copy(io.Discard, b) }()
+
+	ch := world.NewChunk(0, 0)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			ch.SetBlock(x, 63, z, world.BlockState{ID: 1, Name: "stone", Solid: true})
+			ch.SetBlock(x, 64, z, world.BlockState{ID: 0, Name: "air", Solid: false})
+			ch.SetBlock(x, 65, z, world.BlockState{ID: 0, Name: "air", Solid: false})
+		}
+	}
+	c.World().AddChunk(ch)
+
+	c.stateMu.Lock()
+	c.player.X = 1.5
+	c.player.Y = 64.0
+	c.player.Z = 1.5
+	c.positionSynced = true
+	c.stateMu.Unlock()
+
+	failedCh := make(chan state.NavFailedEvent, 1)
+	if _, err := c.bus.On("nav_failed", func(e state.Event) {
+		if ev, ok := e.(state.NavFailedEvent); ok {
+			failedCh <- ev
+		}
+	}); err != nil {
+		t.Fatalf("On: %v", err)
+	}
+
+	err := c.NavigateTo2(5, 64, 1)
+	if err != nil {
+		t.Fatalf("NavigateTo2 failed: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Remove support at start pos (1, 63, 1)
+	ch.SetBlock(1, 63, 1, world.BlockState{ID: 0, Name: "air", Solid: false})
+
+	// Emit block update to trigger footprint invalidation
+	c.bus.Emit(state.BlockUpdateEvent{
+		X: 1, Y: 63, Z: 1,
+		StateID: 0,
+	})
+
+	select {
+	case ev := <-failedCh:
+		if ev.Reason == "" {
+			t.Fatalf("expected failure reason, got empty")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("expected navigation to fail after support was removed, but it did not")
 	}
 }

@@ -2,6 +2,7 @@ package world
 
 import (
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -86,6 +87,75 @@ func (w *World) FindNearestBlock(origin Vec3, name string, radius int) (BlockHit
 	})
 
 	return best, found
+}
+
+// FindBlocks searches loaded chunks for up to count nearest blocks matching name
+// within radius. The returned slice is sorted by distance (closest first).
+func (w *World) FindBlocks(origin Vec3, name string, count, radius int) []BlockHit {
+	if w == nil || radius < 0 || count <= 0 {
+		return nil
+	}
+	target := normalizeBlockName(name)
+	if target == "" {
+		return nil
+	}
+
+	originBlockY := int(math.Floor(origin.Y))
+	minY := maxInt(MinY, originBlockY-radius)
+	maxY := minInt(MaxY, originBlockY+radius)
+	radiusSq := float64(radius * radius)
+
+	var hits []BlockHit
+
+	w.chunks.Range(func(_, value any) bool {
+		chunk, ok := value.(*Chunk)
+		if !ok || chunk == nil {
+			return true
+		}
+		baseX := chunk.ChunkX * ChunkWidth
+		baseZ := chunk.ChunkZ * ChunkDepth
+		for localZ := 0; localZ < ChunkDepth; localZ++ {
+			worldZ := baseZ + localZ
+			dz := float64(worldZ) - origin.Z
+			if dz*dz > radiusSq {
+				continue
+			}
+			for localX := 0; localX < ChunkWidth; localX++ {
+				worldX := baseX + localX
+				dx := float64(worldX) - origin.X
+				if dx*dx+dz*dz > radiusSq {
+					continue
+				}
+				for y := minY; y <= maxY; y++ {
+					dy := float64(y) - origin.Y
+					distSq := dx*dx + dy*dy + dz*dz
+					if distSq > radiusSq {
+						continue
+					}
+					block, ok := chunk.BlockAt(localX, y, localZ)
+					if !ok || normalizeBlockName(block.Name) != target {
+						continue
+					}
+					hits = append(hits, BlockHit{
+						X:        worldX,
+						Y:        y,
+						Z:        worldZ,
+						Block:    block,
+						Distance: math.Sqrt(distSq),
+					})
+				}
+			}
+		}
+		return true
+	})
+
+	sort.Slice(hits, func(i, j int) bool {
+		return hits[i].Distance < hits[j].Distance
+	})
+	if len(hits) > count {
+		hits = hits[:count]
+	}
+	return hits
 }
 
 func normalizeBlockName(name string) string {

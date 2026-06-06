@@ -2,7 +2,6 @@ package feast
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -10,21 +9,19 @@ import (
 	"github.com/qrjhamron/feast/pkg/state"
 )
 
+// Container represents an open inventory window, such as a chest.
 type Container struct {
-	ID     int32
-	Type   string
+	// ID is the server-assigned window ID.
+	ID int32
+	// Type is the container type (e.g. "minecraft:generic_9x3").
+	Type string
+	// Title is the parsed chat-component title of the container.
 	Title  string
 	client *Client
 }
 
 var (
-	ErrContainerNotOpen       = errors.New("container not open")
-	ErrContainerSlotNotFound  = errors.New("container slot not found")
-	ErrInventoryItemNotFound  = errors.New("inventory item not found")
-	ErrInventoryFull          = errors.New("inventory full")
-	ErrContainerFull          = errors.New("container full")
-	ErrContainerActionTimeout = errors.New("container action timeout")
-	ErrContainerRejected      = errors.New("container rejected action")
+// Errors moved to errors.go
 )
 
 func (ct *Container) Items() map[int]ItemStack {
@@ -100,7 +97,7 @@ func (c *Client) OpenChest(ctx context.Context, pos BlockPos) (*Container, error
 	case container := <-ch:
 		return container, nil
 	case <-time.After(3 * time.Second):
-		return nil, fmt.Errorf("timeout waiting for chest to open")
+		return nil, ErrContainerOpenTimeout
 	}
 }
 

@@ -8,14 +8,20 @@ import (
 	"github.com/qrjhamron/feast/pkg/nav/goal"
 )
 
+// MovementProfile configures the pathfinder's movement heuristics.
 type MovementProfile = executor.MovementProfile
 
 const (
-	MovementBotLike   MovementProfile = executor.MovementBotLike
+	// MovementBotLike creates a profile optimized for fastest direct paths (teleport/skip bounds).
+	MovementBotLike MovementProfile = executor.MovementBotLike
+	// MovementHumanLike creates a profile simulating walking (stepping, avoiding direct diagonal clips).
 	MovementHumanLike MovementProfile = executor.MovementHumanLike
 )
 
+// MovementOptions configures navigation settings like the movement profile to use.
 type MovementOptions = executor.MovementOptions
+
+// MovementStats contains statistics from a completed navigation.
 type MovementStats = executor.MovementStats
 
 func (c *Client) SetMovementProfile(profile MovementProfile) {
@@ -39,6 +45,7 @@ func (c *Client) LastMovementStats() MovementStats {
 	return c.lastMovementStats
 }
 
+// Advanced: PositionSyncSeq returns the sequence ID of the last processed position packet.
 func (c *Client) PositionSyncSeq() uint64 {
 	return atomic.LoadUint64(&c.positionSyncSeq)
 }

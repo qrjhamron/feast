@@ -1,8 +1,10 @@
 package feast
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -294,5 +296,140 @@ func TestContainerFailuresAndClose(t *testing.T) {
 	}
 	if c.ActiveContainer() != nil {
 		t.Fatal("close should clear active container")
+	}
+}
+
+func TestLookRotationMath(t *testing.T) {
+	// North
+	y, p := CalculateLookRotation(0, 1.62, 0, 0, 1.62, -2.0)
+	if math.Abs(float64(y)-180) > 1e-4 && math.Abs(float64(y)+180) > 1e-4 {
+		t.Errorf("North yaw got %f want 180 or -180", y)
+	}
+	if math.Abs(float64(p)) > 1e-4 {
+		t.Errorf("North pitch got %f want 0", p)
+	}
+
+	// South
+	y, p = CalculateLookRotation(0, 1.62, 0, 0, 1.62, 2.0)
+	if math.Abs(float64(y)) > 1e-4 {
+		t.Errorf("South yaw got %f want 0", y)
+	}
+	if math.Abs(float64(p)) > 1e-4 {
+		t.Errorf("South pitch got %f want 0", p)
+	}
+
+	// East
+	y, p = CalculateLookRotation(0, 1.62, 0, 2.0, 1.62, 0)
+	if math.Abs(float64(y)-(-90)) > 1e-4 {
+		t.Errorf("East yaw got %f want -90", y)
+	}
+	if math.Abs(float64(p)) > 1e-4 {
+		t.Errorf("East pitch got %f want 0", p)
+	}
+
+	// West
+	y, p = CalculateLookRotation(0, 1.62, 0, -2.0, 1.62, 0)
+	if math.Abs(float64(y)-90) > 1e-4 {
+		t.Errorf("West yaw got %f want 90", y)
+	}
+	if math.Abs(float64(p)) > 1e-4 {
+		t.Errorf("West pitch got %f want 0", p)
+	}
+
+	// Above
+	_, p = CalculateLookRotation(0, 1.62, 0, 0, 3.62, 0)
+	if math.Abs(float64(p)-(-90)) > 1e-4 {
+		t.Errorf("Above pitch got %f want -90", p)
+	}
+
+	// Below
+	_, p = CalculateLookRotation(0, 1.62, 0, 0, -0.38, 0)
+	if math.Abs(float64(p)-90) > 1e-4 {
+		t.Errorf("Below pitch got %f want 90", p)
+	}
+}
+
+func TestBreakBlockLookSequence(t *testing.T) {
+	c := NewClient(Options{})
+	markCoreActionReady(t, c)
+	addFlatActionChunk(c)
+
+	// Set player position and check target center
+	c.stateMu.Lock()
+	c.player.X = 0.5
+	c.player.Y = 64
+	c.player.Z = 0.5
+	c.player.OnGround = true
+	c.stateMu.Unlock()
+
+	// Make sure the target block is stone so it is breakable (not air/bedrock)
+	c.world.SetBlock(2, 64, 2, 1)
+
+	a, b := net.Pipe()
+	c.conn = feastconn.New(a)
+	defer a.Close()
+	defer b.Close()
+
+	go func() {
+		// BreakBlock will block until it gets block update or times out.
+		// Since we only care about the sent packet sequence, we can run BreakBlock in a goroutine with a timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		defer cancel()
+		_ = c.BreakBlock(ctx, protocol.BlockPos{X: 2, Y: 64, Z: 2})
+	}()
+
+	s := feastconn.New(b)
+
+	// First packet should be PlayServerboundSetPlayerPositionAndRotationPacket
+	rawPkt1, err := s.ReadPacket()
+	if err != nil {
+		t.Fatalf("failed to read packet 1: %v", err)
+	}
+
+	var posRot protocol.PlayServerboundSetPlayerPositionAndRotationPacket
+	if rawPkt1.ID != posRot.PacketID() {
+		t.Fatalf("expected SetPlayerPositionAndRotation packet, got ID %d", rawPkt1.ID)
+	}
+
+	// Unmarshal and verify yaw/pitch, and preserved position/onGround
+	var decodedPosRot protocol.PlayServerboundSetPlayerPositionAndRotationPacket
+	r1 := protocol.NewReader(bytes.NewReader(rawPkt1.Data))
+	if err := decodedPosRot.Unmarshal(r1); err != nil {
+		t.Fatalf("failed to unmarshal rotation packet: %v", err)
+	}
+
+	if decodedPosRot.X != 0.5 || decodedPosRot.Y != 64 || decodedPosRot.Z != 0.5 || !decodedPosRot.OnGround {
+		t.Errorf("expected position (0.5, 64, 0.5) and onGround true, got (%f, %f, %f) onGround=%v",
+			decodedPosRot.X, decodedPosRot.Y, decodedPosRot.Z, decodedPosRot.OnGround)
+	}
+
+	// Calculate expected yaw/pitch from (0.5, 65.62, 0.5) to (2.5, 64.5, 2.5)
+	expectedYaw, expectedPitch := CalculateLookRotation(0.5, 65.62, 0.5, 2.5, 64.5, 2.5)
+	if math.Abs(float64(decodedPosRot.Yaw-expectedYaw)) > 1e-4 {
+		t.Errorf("expected yaw %f, got %f", expectedYaw, decodedPosRot.Yaw)
+	}
+	if math.Abs(float64(decodedPosRot.Pitch-expectedPitch)) > 1e-4 {
+		t.Errorf("expected pitch %f, got %f", expectedPitch, decodedPosRot.Pitch)
+	}
+
+	// Second packet should be PlayServerboundPlayerActionPacket (StartDigging)
+	rawPkt2, err := s.ReadPacket()
+	if err != nil {
+		t.Fatalf("failed to read packet 2: %v", err)
+	}
+
+	var actionPkt protocol.PlayServerboundPlayerActionPacket
+	if rawPkt2.ID != actionPkt.PacketID() {
+		t.Fatalf("expected PlayerAction packet, got ID %d", rawPkt2.ID)
+	}
+
+	var decodedAction protocol.PlayServerboundPlayerActionPacket
+	r2 := protocol.NewReader(bytes.NewReader(rawPkt2.Data))
+	if err := decodedAction.Unmarshal(r2); err != nil {
+		t.Fatalf("failed to unmarshal player action: %v", err)
+	}
+
+	if decodedAction.Status != protocol.PlayerActionStartDigging {
+		t.Errorf("expected StartDigging status %d, got %d", protocol.PlayerActionStartDigging, decodedAction.Status)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 )
 
 const (
@@ -13,20 +14,37 @@ const (
 )
 
 // Reader reads Minecraft protocol primitives from an underlying reader.
+//
+// A Reader is not safe for concurrent use. Each packet is decoded by a single
+// goroutine with its own Reader, so the scratch buffer below is reused across
+// calls to avoid a heap allocation per fixed-width read.
 type Reader struct {
-	r io.Reader
+	r   io.Reader
+	buf [8]byte
 }
 
 // NewReader returns a new protocol Reader.
 func NewReader(r io.Reader) *Reader { return &Reader{r: r} }
 
-// ReadVarInt reads a VarInt value.
+// ReadVarInt reads a VarInt value (max 5 bytes).
 func (r *Reader) ReadVarInt() (int32, error) {
-	v, _, err := ReadVarInt(r.r)
-	return v, err
+	var value uint32
+	for size := 0; ; size++ {
+		b, err := r.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		value |= uint32(b&SegmentBits) << uint32(7*size)
+		if size >= MaxVarIntLen-1 && b&ContinueBit != 0 {
+			return 0, ErrVarIntTooBig
+		}
+		if b&ContinueBit == 0 {
+			return int32(value), nil
+		}
+	}
 }
 
-// ReadVarLong reads a VarLong value.
+// ReadVarLong reads a VarLong value (max 10 bytes).
 func (r *Reader) ReadVarLong() (int64, error) {
 	var value uint64
 	for i := 0; i < 10; i++ {
@@ -39,7 +57,7 @@ func (r *Reader) ReadVarLong() (int64, error) {
 			return int64(value), nil
 		}
 	}
-	return 0, fmt.Errorf("varlong too big")
+	return 0, fmt.Errorf("protocol: varlong too long (>10 bytes)")
 }
 
 // ReadString reads a length-prefixed UTF-8 string.
@@ -79,44 +97,50 @@ func (r *Reader) ReadBoolean() (bool, error) {
 
 // ReadByte reads a signed byte.
 func (r *Reader) ReadByte() (byte, error) {
-	var b [1]byte
-	_, err := io.ReadFull(r.r, b[:])
-	return b[0], err
+	if _, err := io.ReadFull(r.r, r.buf[:1]); err != nil {
+		return 0, err
+	}
+	return r.buf[0], nil
 }
 
 // ReadShort reads a big-endian int16.
 func (r *Reader) ReadShort() (int16, error) {
-	var v int16
-	err := binary.Read(r.r, binary.BigEndian, &v)
-	return v, err
+	if _, err := io.ReadFull(r.r, r.buf[:2]); err != nil {
+		return 0, err
+	}
+	return int16(binary.BigEndian.Uint16(r.buf[:2])), nil
 }
 
 // ReadInt reads a big-endian int32.
 func (r *Reader) ReadInt() (int32, error) {
-	var v int32
-	err := binary.Read(r.r, binary.BigEndian, &v)
-	return v, err
+	if _, err := io.ReadFull(r.r, r.buf[:4]); err != nil {
+		return 0, err
+	}
+	return int32(binary.BigEndian.Uint32(r.buf[:4])), nil
 }
 
 // ReadLong reads a big-endian int64.
 func (r *Reader) ReadLong() (int64, error) {
-	var v int64
-	err := binary.Read(r.r, binary.BigEndian, &v)
-	return v, err
+	if _, err := io.ReadFull(r.r, r.buf[:8]); err != nil {
+		return 0, err
+	}
+	return int64(binary.BigEndian.Uint64(r.buf[:8])), nil
 }
 
 // ReadFloat reads a big-endian float32.
 func (r *Reader) ReadFloat() (float32, error) {
-	var v float32
-	err := binary.Read(r.r, binary.BigEndian, &v)
-	return v, err
+	if _, err := io.ReadFull(r.r, r.buf[:4]); err != nil {
+		return 0, err
+	}
+	return math.Float32frombits(binary.BigEndian.Uint32(r.buf[:4])), nil
 }
 
 // ReadDouble reads a big-endian float64.
 func (r *Reader) ReadDouble() (float64, error) {
-	var v float64
-	err := binary.Read(r.r, binary.BigEndian, &v)
-	return v, err
+	if _, err := io.ReadFull(r.r, r.buf[:8]); err != nil {
+		return 0, err
+	}
+	return math.Float64frombits(binary.BigEndian.Uint64(r.buf[:8])), nil
 }
 
 // ReadByteArray reads a VarInt-length-prefixed byte array.

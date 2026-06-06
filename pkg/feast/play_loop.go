@@ -24,6 +24,7 @@ func unmarshalRaw(pkt protocol.Packet, raw *protocol.RawPacket) error {
 
 func (c *Client) readLoop() {
 	defer c.wg.Done()
+	defer c.markManagedGoroutine()()
 	for {
 		select {
 		case <-c.stopCh:
@@ -63,6 +64,7 @@ func (c *Client) readLoop() {
 			c.wg.Add(1)
 			go func(pkt *protocol.RawPacket, st state.State) {
 				defer c.wg.Done()
+				defer c.markManagedGoroutine()()
 				c.chunkSem <- struct{}{}
 				defer func() { <-c.chunkSem }()
 				if err := c.ingestChunk(pkt); err != nil {
@@ -95,6 +97,7 @@ func (c *Client) ingestChunk(raw *protocol.RawPacket) error {
 
 func (c *Client) heartbeatLoop() {
 	defer c.wg.Done()
+	defer c.markManagedGoroutine()()
 	t := ticker50ms()
 	defer t.Stop()
 
@@ -111,6 +114,15 @@ func (c *Client) heartbeatLoop() {
 			}
 			if c.IsMoving() {
 				// Navigation owns movement packets while active.
+				continue
+			}
+			if c.IsSupportLost() {
+				if err := c.WaitForGround(c.runtimeCtx); err != nil {
+					if c.closing() || errors.Is(err, ErrClientClosed) {
+						return
+					}
+					c.bus.Emit(state.ErrorEvent{Op: "gravity_fall", Error: err})
+				}
 				continue
 			}
 			hb := c.heartbeatPacket()

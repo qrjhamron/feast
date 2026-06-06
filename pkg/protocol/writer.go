@@ -3,35 +3,55 @@ package protocol
 import (
 	"encoding/binary"
 	"io"
+	"math"
 )
 
 // Writer writes Minecraft protocol primitives to an underlying writer.
+//
+// A Writer is not safe for concurrent use. The scratch buffer is reused across
+// calls to avoid a heap allocation per fixed-width write.
 type Writer struct {
-	w io.Writer
+	w   io.Writer
+	buf [10]byte
 }
 
 // NewWriter returns a new protocol Writer.
 func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
 
-// WriteVarInt writes a VarInt.
+// WriteVarInt writes a VarInt (max 5 bytes) in a single underlying write.
 func (w *Writer) WriteVarInt(v int32) error {
-	_, err := WriteVarInt(w.w, v)
+	u := uint32(v)
+	n := 0
+	for {
+		if u&^uint32(SegmentBits) == 0 {
+			w.buf[n] = byte(u)
+			n++
+			break
+		}
+		w.buf[n] = byte((u & SegmentBits) | ContinueBit)
+		n++
+		u >>= 7
+	}
+	_, err := w.w.Write(w.buf[:n])
 	return err
 }
 
-// WriteVarLong writes a VarLong.
+// WriteVarLong writes a VarLong (max 10 bytes) in a single underlying write.
 func (w *Writer) WriteVarLong(v int64) error {
 	u := uint64(v)
+	n := 0
 	for {
-		if (u & ^uint64(0x7f)) == 0 {
-			_, err := w.w.Write([]byte{byte(u)})
-			return err
+		if u&^uint64(0x7f) == 0 {
+			w.buf[n] = byte(u)
+			n++
+			break
 		}
-		if _, err := w.w.Write([]byte{byte((u & 0x7f) | 0x80)}); err != nil {
-			return err
-		}
+		w.buf[n] = byte((u & 0x7f) | 0x80)
+		n++
 		u >>= 7
 	}
+	_, err := w.w.Write(w.buf[:n])
+	return err
 }
 
 // WriteString writes a length-prefixed UTF-8 string.
@@ -52,43 +72,54 @@ func (w *Writer) WriteUUID(u [16]byte) error {
 
 // WriteBoolean writes a bool.
 func (w *Writer) WriteBoolean(v bool) error {
-	b := byte(0)
+	w.buf[0] = 0
 	if v {
-		b = 1
+		w.buf[0] = 1
 	}
-	_, err := w.w.Write([]byte{b})
+	_, err := w.w.Write(w.buf[:1])
 	return err
 }
 
 // WriteByte writes a single byte.
 func (w *Writer) WriteByte(v byte) error {
-	_, err := w.w.Write([]byte{v})
+	w.buf[0] = v
+	_, err := w.w.Write(w.buf[:1])
 	return err
 }
 
 // WriteShort writes a big-endian int16.
 func (w *Writer) WriteShort(v int16) error {
-	return binary.Write(w.w, binary.BigEndian, v)
+	binary.BigEndian.PutUint16(w.buf[:2], uint16(v))
+	_, err := w.w.Write(w.buf[:2])
+	return err
 }
 
 // WriteInt writes a big-endian int32.
 func (w *Writer) WriteInt(v int32) error {
-	return binary.Write(w.w, binary.BigEndian, v)
+	binary.BigEndian.PutUint32(w.buf[:4], uint32(v))
+	_, err := w.w.Write(w.buf[:4])
+	return err
 }
 
 // WriteLong writes a big-endian int64.
 func (w *Writer) WriteLong(v int64) error {
-	return binary.Write(w.w, binary.BigEndian, v)
+	binary.BigEndian.PutUint64(w.buf[:8], uint64(v))
+	_, err := w.w.Write(w.buf[:8])
+	return err
 }
 
 // WriteFloat writes a big-endian float32.
 func (w *Writer) WriteFloat(v float32) error {
-	return binary.Write(w.w, binary.BigEndian, v)
+	binary.BigEndian.PutUint32(w.buf[:4], math.Float32bits(v))
+	_, err := w.w.Write(w.buf[:4])
+	return err
 }
 
 // WriteDouble writes a big-endian float64.
 func (w *Writer) WriteDouble(v float64) error {
-	return binary.Write(w.w, binary.BigEndian, v)
+	binary.BigEndian.PutUint64(w.buf[:8], math.Float64bits(v))
+	_, err := w.w.Write(w.buf[:8])
+	return err
 }
 
 // WriteByteArray writes a VarInt-length-prefixed byte array.

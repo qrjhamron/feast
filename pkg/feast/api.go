@@ -100,6 +100,8 @@ const (
 // It aliases protocol.BlockPos so library users need not import pkg/protocol.
 type BlockPos = protocol.BlockPos
 
+// Vec3 is a floating-point world-space coordinate.
+// It aliases world.Vec3 so library users need not import pkg/world.
 type Vec3 = world.Vec3
 
 // ─── Top-level constructors ───────────────────────────────────────────────────
@@ -138,12 +140,15 @@ func (c *Client) Food() int32 {
 
 // ─── World helpers ────────────────────────────────────────────────────────────
 
-// FindNearestBlock searches loaded chunks for the nearest block with the given
-// registry name within radius blocks of the bot's current position.
-// Returns the hit and true when found.
+// FindNearestBlock searches the loaded world for the nearest block matching name.
 func (c *Client) FindNearestBlock(name string, radius int) (world.BlockHit, bool) {
-	pos := c.Position()
-	return c.world.FindNearestBlock(pos, name, radius)
+	return c.world.FindNearestBlock(c.Position(), name, radius)
+}
+
+// FindBlocks searches the loaded world for up to count nearest blocks matching name.
+// Results are sorted by distance.
+func (c *Client) FindBlocks(name string, count, radius int) []world.BlockHit {
+	return c.world.FindBlocks(c.Position(), name, count, radius)
 }
 
 func FindPlaceTargetNear(w *world.World, origin Vec3, blockName string, radius int) (target BlockPos, face Direction, ok bool) {
@@ -195,7 +200,29 @@ func FindPlaceTargetNear(w *world.World, origin Vec3, blockName string, radius i
 // satisfied, navigation fails, or the context is cancelled.
 //
 // Use [goal.Block], [goal.XZ], [goal.Proximity], or [goal.NearEntity] to create a goal.
+// NavigateResult contains details about a completed navigation.
+type NavigateResult struct {
+	// Reached is true if the goal was satisfied.
+	Reached bool
+	// FinalPosition is the bot's position after navigation.
+	FinalPosition Vec3
+	// DistanceTraveled is the total distance moved.
+	DistanceTraveled float64
+	// PacketsSent is the number of position packets sent.
+	PacketsSent int
+	// Duration is how long navigation took.
+	Duration time.Duration
+}
+
+// NavigateTo wraps NavigateWithResult and discards the result.
 func (c *Client) NavigateTo(ctx context.Context, g goal.Goal, opts ...MovementOptions) error {
+	_, err := c.NavigateWithResult(ctx, g, opts...)
+	return err
+}
+
+// NavigateWithResult executes pathfinding and movement towards the given goal.
+func (c *Client) NavigateWithResult(ctx context.Context, g goal.Goal, opts ...MovementOptions) (NavigateResult, error) {
+	startTime := time.Now()
 	profile := c.MovementProfile()
 	opt := MovementOptions{
 		Profile: profile,
@@ -246,15 +273,29 @@ func (c *Client) NavigateTo(ctx context.Context, g goal.Goal, opts ...MovementOp
 	defer c.bus.Off(failID)
 
 	if err := c.navigateTo(targetX, targetY, targetZ); err != nil {
-		return err
+		return NavigateResult{}, err
 	}
 
 	select {
 	case <-ctx.Done():
 		c.StopNavigation()
-		return ctx.Err()
+		stats := c.LastMovementStats()
+		return NavigateResult{
+			Reached:          false,
+			FinalPosition:    c.Position(),
+			DistanceTraveled: stats.DistanceTraveled,
+			PacketsSent:      stats.PacketsSent,
+			Duration:         time.Since(startTime),
+		}, ctx.Err()
 	case err := <-done:
-		return err
+		stats := c.LastMovementStats()
+		return NavigateResult{
+			Reached:          err == nil,
+			FinalPosition:    c.Position(),
+			DistanceTraveled: stats.DistanceTraveled,
+			PacketsSent:      stats.PacketsSent,
+			Duration:         time.Since(startTime),
+		}, err
 	}
 }
 
@@ -265,14 +306,36 @@ func (c *Client) navigateTo(x, y, z int) error {
 
 // ─── Block interaction ────────────────────────────────────────────────────────
 
+// BreakOptions configures the behavior of a block-breaking action.
 type BreakOptions struct {
+	// AutoTool enables automatic selection of the best tool from the inventory.
 	AutoTool bool
+	// Creative ignores block hardness delays (acts instantly).
 	Creative bool
 }
 
-// BreakBlock sends start+finish digging packets for the block at pos.
-// If AutoTool option is set, it selects the best matching tool and waits for block update.
+// BreakResult contains details about a completed block break action.
+type BreakResult struct {
+	// Position is the block that was broken.
+	Position BlockPos
+	// OldBlock is the block name before breaking.
+	OldBlock string
+	// NewBlock is the block name after breaking (typically "air").
+	NewBlock string
+	// ToolUsed is the name of the tool used, or "none".
+	ToolUsed string
+	// Duration is how long the break action took.
+	Duration time.Duration
+}
+
+// BreakBlock wraps BreakBlockWithResult and discards the result.
 func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOptions) error {
+	_, err := c.BreakBlockWithResult(ctx, pos, opts...)
+	return err
+}
+
+// BreakBlockWithResult sends packets to dig the target block and waits for the server to confirm the break.
+func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ...BreakOptions) (BreakResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -288,13 +351,14 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 	}
 
 	if err := c.requireCoreActionReady(); err != nil {
-		return err
+		return BreakResult{}, err
 	}
 	if err := c.world.RequireBlockLoaded(world.BlockPos(pos)); err != nil {
-		return err
+		return BreakResult{}, err
 	}
 
-	bx, by, bz, _, _ := c.GetPosition()
+	playerSt := c.PlayerState()
+	bx, by, bz := playerSt.X, playerSt.Y, playerSt.Z
 	eyeX, eyeY, eyeZ := bx, by+1.62, bz
 	tcX, tcY, tcZ := float64(pos.X)+0.5, float64(pos.Y)+0.5, float64(pos.Z)+0.5
 	dx := tcX - eyeX
@@ -303,19 +367,35 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 	distance := math.Sqrt(dx*dx + dy*dy + dz*dz)
 	withinReach := distance <= 4.5
 
-	if pos.X == int32(math.Floor(bx)) && pos.Z == int32(math.Floor(bz)) && pos.Y == int32(math.Floor(by))-1 {
-		return ErrBreakTargetUnsafe
+	underFeet := pos.X == int32(math.Floor(bx)) && pos.Z == int32(math.Floor(bz)) && pos.Y == int32(math.Floor(by))-1
+
+	minX := bx - 0.3
+	maxX := bx + 0.3
+	minZ := bz - 0.3
+	maxZ := bz + 0.3
+	blockMinX := float64(pos.X)
+	blockMaxX := float64(pos.X) + 1.0
+	blockMinZ := float64(pos.Z)
+	blockMaxZ := float64(pos.Z) + 1.0
+
+	inFootprint := pos.Y == int32(math.Floor(by))-1 &&
+		blockMinX <= maxX && blockMaxX >= minX &&
+		blockMinZ <= maxZ && blockMaxZ >= minZ
+
+	if underFeet || inFootprint {
+		return BreakResult{}, ErrBreakTargetUnsafe
 	}
 
 	blockState, err := c.world.GetBlock(int(pos.X), int(pos.Y), int(pos.Z))
 	if err != nil {
-		return fmt.Errorf("failed to get block: %w", err)
+		return BreakResult{}, fmt.Errorf("failed to get block: %w", err)
 	}
 	if c.world.IsReplaceable(world.BlockPos(pos)) {
-		return ErrBlockAir
+		return BreakResult{}, ErrBlockAir
 	}
-	if blockState.Name == "bedrock" || blockState.Name == "barrier" {
-		return fmt.Errorf("%w: %s", ErrBlockUnbreakable, blockState.Name)
+	nameNorm := strings.TrimPrefix(strings.ToLower(blockState.Name), "minecraft:")
+	if nameNorm == "bedrock" || nameNorm == "barrier" {
+		return BreakResult{}, fmt.Errorf("%w: %s", ErrBlockUnbreakable, blockState.Name)
 	}
 
 	blockName := blockState.Name
@@ -331,8 +411,8 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 
 	if autoTool {
 		preferredKind := registry.PreferredToolForBlock(blockName)
-		c.inventoryMu.RLock()
 		if preferredKind != registry.ToolNone {
+			c.inventoryMu.RLock()
 			for i := 0; i < 9; i++ {
 				invSlot := 36 + i
 				st, present := c.inventory.Slots[invSlot]
@@ -345,13 +425,13 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 					}
 				}
 			}
+			c.inventoryMu.RUnlock()
 		}
-		c.inventoryMu.RUnlock()
 
 		if selectedSlot != -1 {
 			if selectedSlot != currentSlot {
 				if err := c.SelectHotbarSlot(ctx, selectedSlot); err != nil {
-					return fmt.Errorf("failed to select tool slot: %w", err)
+					return BreakResult{}, fmt.Errorf("failed to select tool slot: %w", err)
 				}
 			}
 			fmt.Printf("[break] selected_tool=%s\n", selectedToolName)
@@ -385,7 +465,7 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 	fmt.Printf("[break-debug] estimated_break_delay=%s\n", delay)
 
 	if !withinReach {
-		return fmt.Errorf("%w (distance %.2f)", ErrBreakOutOfReach, distance)
+		return BreakResult{}, fmt.Errorf("%w (distance %.2f)", ErrBreakOutOfReach, distance)
 	}
 
 	ch := make(chan struct{}, 1)
@@ -416,8 +496,28 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 	defer c.bus.Off(sectionHandlerID)
 
 	face := c.determineDigFace(world.Vec3{X: bx, Y: by, Z: bz}, pos)
+	fmt.Printf("[break-debug] face=%d\n", face)
 	seq := int32(atomic.AddInt32(&placementSequence, 1))
 	fmt.Printf("[break] sequence_id=%d\n", seq)
+
+	// Look-at-target step
+	yaw, pitch := CalculateLookRotation(eyeX, eyeY, eyeZ, tcX, tcY, tcZ)
+	lookPkt := &protocol.PlayServerboundSetPlayerPositionAndRotationPacket{
+		X:        playerSt.X,
+		Y:        playerSt.Y,
+		Z:        playerSt.Z,
+		Yaw:      yaw,
+		Pitch:    pitch,
+		OnGround: playerSt.OnGround,
+	}
+	fmt.Printf("[look] eye=%f,%f,%f\n", eyeX, eyeY, eyeZ)
+	fmt.Printf("[look] target=%f,%f,%f\n", tcX, tcY, tcZ)
+	fmt.Printf("[look] yaw=%f\n", yaw)
+	fmt.Printf("[look] pitch=%f\n", pitch)
+	if err := c.WritePacket(lookPkt); err != nil {
+		return BreakResult{}, fmt.Errorf("failed to look at target: %w", err)
+	}
+	fmt.Printf("[look] sent=true\n")
 
 	start := &protocol.PlayServerboundPlayerActionPacket{
 		Status:   protocol.PlayerActionStartDigging,
@@ -427,14 +527,14 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 	}
 	if err := c.WritePacket(start); err != nil {
 		fmt.Printf("[break-debug] start_sent=false\n")
-		return fmt.Errorf("break block start: %w", err)
+		return BreakResult{}, fmt.Errorf("break block start: %w", err)
 	}
 	fmt.Printf("[break-debug] start_sent=true\n")
 
 	if !creative && delay > 0 {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return BreakResult{}, ctx.Err()
 		case <-time.After(delay):
 		}
 	}
@@ -447,23 +547,24 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 	}
 	if err := c.WritePacket(finish); err != nil {
 		fmt.Printf("[break-debug] finish_sent=false\n")
-		return fmt.Errorf("break block finish: %w", err)
+		return BreakResult{}, fmt.Errorf("break block finish: %w", err)
 	}
 	fmt.Printf("[break-debug] finish_sent=true\n")
 
 	var finalStateName string = "unknown"
 
+	startTime := time.Now()
 	select {
 	case <-ctx.Done():
 		fmt.Printf("[break-debug] update_seen=false\n")
 		fmt.Printf("[break-debug] final_state=unknown\n")
-		return ctx.Err()
+		return BreakResult{}, ctx.Err()
 	case <-ch:
 		newState, err := c.world.GetBlock(int(pos.X), int(pos.Y), int(pos.Z))
 		if err != nil {
 			fmt.Printf("[break-debug] update_seen=true\n")
 			fmt.Printf("[break-debug] final_state=unknown\n")
-			return err
+			return BreakResult{}, err
 		}
 		finalStateName = newState.Name
 		fmt.Printf("[break-debug] update_seen=true\n")
@@ -471,15 +572,37 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 
 		if !c.world.IsReplaceable(world.BlockPos(pos)) || newState.Name == blockName {
 			fmt.Printf("[break] rollback detected: expected air/replaceable, got %s\n", newState.Name)
-			return ErrBreakRolledBack
+			return BreakResult{}, ErrBreakRolledBack
 		}
 		fmt.Printf("[break] result=PASS\n")
-		return nil
+		return BreakResult{
+			Position: pos,
+			OldBlock: blockName,
+			NewBlock: finalStateName,
+			ToolUsed: selectedToolName,
+			Duration: time.Since(startTime) + delay,
+		}, nil
 	case <-time.After(4 * time.Second):
 		fmt.Printf("[break-debug] update_seen=false\n")
 		fmt.Printf("[break-debug] final_state=unknown\n")
-		return ErrBlockUpdateTimeout
+		return BreakResult{}, ErrBlockUpdateTimeout
 	}
+}
+
+// CalculateLookRotation calculates the Minecraft yaw and pitch (in degrees) from eyePos to targetCenter.
+func CalculateLookRotation(eyeX, eyeY, eyeZ, tcX, tcY, tcZ float64) (yaw float32, pitch float32) {
+	dx := tcX - eyeX
+	dy := tcY - eyeY
+	dz := tcZ - eyeZ
+
+	yawRad := -math.Atan2(dx, dz)
+	yaw = float32(yawRad * 180 / math.Pi)
+
+	horizontalDistance := math.Sqrt(dx*dx + dz*dz)
+	pitchRad := -math.Atan2(dy, horizontalDistance)
+	pitch = float32(pitchRad * 180 / math.Pi)
+
+	return yaw, pitch
 }
 
 func (c *Client) determineDigFace(botPos world.Vec3, target BlockPos) byte {
@@ -585,9 +708,9 @@ func (c *Client) Chat(message string) error {
 // OnReady registers fn to be called once the client enters the Play state and
 // has received at least one position sync. The callback fires at most once per
 // connection.
-func (c *Client) OnReady(fn func()) {
+func (c *Client) OnReady(fn func()) func() {
 	var fired bool
-	c.bus.On("position", func(e state.Event) {
+	id, _ := c.bus.On("position", func(e state.Event) {
 		if fired {
 			return
 		}
@@ -596,57 +719,63 @@ func (c *Client) OnReady(fn func()) {
 			fn()
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnChat registers fn to be called for every player-chat message.
-func (c *Client) OnChat(fn func(ChatEvent)) {
-	c.bus.On("chat", func(e state.Event) {
+func (c *Client) OnChat(fn func(ChatEvent)) func() {
+	id, _ := c.bus.On("chat", func(e state.Event) {
 		if ev, ok := e.(state.ChatEvent); ok {
 			fn(ChatEvent{Sender: ev.Sender, Message: ev.Message})
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnSystemChat registers fn to be called for system/server messages.
 // System messages use the same ChatEvent type with Sender set to "".
-func (c *Client) OnSystemChat(fn func(ChatEvent)) {
-	c.bus.On("system_chat", func(e state.Event) {
+func (c *Client) OnSystemChat(fn func(ChatEvent)) func() {
+	id, _ := c.bus.On("system_chat", func(e state.Event) {
 		if ev, ok := e.(state.ChatEvent); ok {
 			fn(ChatEvent{Sender: ev.Sender, Message: ev.Message})
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnHealth registers fn for health/food/saturation change events.
-func (c *Client) OnHealth(fn func(HealthEvent)) {
-	c.bus.On("health", func(e state.Event) {
+func (c *Client) OnHealth(fn func(HealthEvent)) func() {
+	id, _ := c.bus.On("health", func(e state.Event) {
 		if ev, ok := e.(state.HealthEvent); ok {
 			fn(HealthEvent{Health: ev.Health, Food: ev.Food, Saturation: ev.Saturation})
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnPosition registers fn for server position-sync events.
-func (c *Client) OnPosition(fn func(PositionEvent)) {
-	c.bus.On("position", func(e state.Event) {
+func (c *Client) OnPosition(fn func(PositionEvent)) func() {
+	id, _ := c.bus.On("position", func(e state.Event) {
 		if ev, ok := e.(state.PositionEvent); ok {
 			fn(PositionEvent{X: ev.X, Y: ev.Y, Z: ev.Z, Yaw: ev.Yaw, Pitch: ev.Pitch})
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnBlockUpdate registers fn for block-state-change events.
-func (c *Client) OnBlockUpdate(fn func(BlockUpdateEvent)) {
-	c.bus.On("block_update", func(e state.Event) {
+func (c *Client) OnBlockUpdate(fn func(BlockUpdateEvent)) func() {
+	id, _ := c.bus.On("block_update", func(e state.Event) {
 		if ev, ok := e.(state.BlockUpdateEvent); ok {
 			fn(BlockUpdateEvent{X: ev.X, Y: ev.Y, Z: ev.Z, StateID: ev.StateID})
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnEntitySpawn registers fn for entity spawn events.
-func (c *Client) OnEntitySpawn(fn func(EntityEvent)) {
-	c.bus.On("entity_spawn", func(e state.Event) {
+func (c *Client) OnEntitySpawn(fn func(EntityEvent)) func() {
+	id, _ := c.bus.On("entity_spawn", func(e state.Event) {
 		if ev, ok := e.(state.EntitySpawnEvent); ok {
 			ent := &world.Entity{
 				ID:   ev.EntityID,
@@ -659,41 +788,45 @@ func (c *Client) OnEntitySpawn(fn func(EntityEvent)) {
 			fn(EntityEvent{Entity: ent, Kind: "spawn"})
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnEntityMove registers fn for entity position-delta events.
-func (c *Client) OnEntityMove(fn func(EntityEvent)) {
-	c.bus.On("entity_move_delta", func(e state.Event) {
+func (c *Client) OnEntityMove(fn func(EntityEvent)) func() {
+	id, _ := c.bus.On("entity_move_delta", func(e state.Event) {
 		if ev, ok := e.(state.EntityMoveDeltaEvent); ok {
 			if ent, exists := c.entities.Get(ev.EntityID); exists {
 				fn(EntityEvent{Entity: ent, Kind: "move"})
 			}
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnEntityRemove registers fn for entity removal events.
-func (c *Client) OnEntityRemove(fn func(EntityEvent)) {
-	c.bus.On("entity_remove", func(e state.Event) {
+func (c *Client) OnEntityRemove(fn func(EntityEvent)) func() {
+	id, _ := c.bus.On("entity_remove", func(e state.Event) {
 		if ev, ok := e.(state.EntityRemoveEvent); ok {
 			fn(EntityEvent{Entity: &world.Entity{ID: ev.EntityID}, Kind: "remove"})
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnError registers fn for non-fatal runtime errors.
-func (c *Client) OnError(fn func(error)) {
-	c.bus.On("error", func(e state.Event) {
+func (c *Client) OnError(fn func(error)) func() {
+	id, _ := c.bus.On("error", func(e state.Event) {
 		if ev, ok := e.(state.ErrorEvent); ok && ev.Error != nil {
 			fn(ev.Error)
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // OnDisconnect registers fn for disconnect events (both clean and unclean).
 // The error is nil for clean disconnects.
-func (c *Client) OnDisconnect(fn func(error)) {
-	c.bus.On("disconnect", func(e state.Event) {
+func (c *Client) OnDisconnect(fn func(error)) func() {
+	id, _ := c.bus.On("disconnect", func(e state.Event) {
 		if ev, ok := e.(state.DisconnectEvent); ok {
 			if ev.Clean {
 				fn(nil)
@@ -702,18 +835,23 @@ func (c *Client) OnDisconnect(fn func(error)) {
 			}
 		}
 	})
+	return func() { c.bus.Off(id) }
 }
 
 // WaitUntilReady blocks until the bot receives its first server position sync,
 // or until the context is cancelled.
+//
+// The internal readiness handler is always unsubscribed before returning, so
+// repeated calls do not leak event handlers.
 func (c *Client) WaitUntilReady(ctx context.Context) error {
 	ready := make(chan struct{}, 1)
-	c.OnReady(func() {
+	unsub := c.OnReady(func() {
 		select {
 		case ready <- struct{}{}:
 		default:
 		}
 	})
+	defer unsub()
 	// Already synced?
 	c.stateMu.RLock()
 	synced := c.positionSynced

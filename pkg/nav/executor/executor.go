@@ -214,6 +214,7 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 	}
 
 	var stats MovementStats
+	var firstTargetX, firstTargetY, firstTargetZ float64
 	startX, startY, startZ, _, _ := client.GetPosition()
 	stats.StartX = startX
 	stats.StartY = startY
@@ -239,6 +240,17 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 		if st, ok := client.(interface{ TrackMovementStats(MovementStats) }); ok {
 			st.TrackMovementStats(stats)
 		}
+		nodeStr := "none"
+		centerStr := "none"
+		if stats.HasFirstTargetNode {
+			nodeStr = fmt.Sprintf("(%d,%d,%d)", stats.FirstTargetNodeX, stats.FirstTargetNodeY, stats.FirstTargetNodeZ)
+			centerStr = fmt.Sprintf("(%.3f,%.3f,%.3f)", firstTargetX, firstTargetY, firstTargetZ)
+		}
+		fmt.Printf("[move] local_astar_node=%s\n", nodeStr)
+		fmt.Printf("[move] executor_target_center=%s\n", centerStr)
+		fmt.Printf("[move] distance_traveled=%.3f\n", stats.DistanceTraveled)
+		fmt.Printf("[move] corrections_seen=%d\n", stats.CorrectionsSeen)
+		fmt.Printf("[move] reached=%t\n", stats.Reached)
 	}()
 
 	var lastSeq uint64
@@ -343,15 +355,18 @@ func Execute(ctx context.Context, client Client, w *world.World, g goal.Goal, in
 
 		edgeStart := currentPos
 		dest := m.Destination(edgeStart)
+		destX := float64(dest[0]) + 0.5
+		destY := float64(dest[1])
+		destZ := float64(dest[2]) + 0.5
 		if !stats.HasFirstTargetNode {
 			stats.HasFirstTargetNode = true
 			stats.FirstTargetNodeX = dest[0]
 			stats.FirstTargetNodeY = dest[1]
 			stats.FirstTargetNodeZ = dest[2]
+			firstTargetX = destX
+			firstTargetY = destY
+			firstTargetZ = destZ
 		}
-		destX := float64(dest[0]) + 0.5
-		destY := float64(dest[1])
-		destZ := float64(dest[2]) + 0.5
 
 		ticks := movementTicks(m, sprinting)
 		if cost := m.Cost(w, edgeStart); !math.IsInf(cost, 1) && !math.IsNaN(cost) {

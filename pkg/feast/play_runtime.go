@@ -1,8 +1,14 @@
 package feast
 
 import (
+	"context"
+	"fmt"
+	"math"
+	"time"
+
 	"github.com/qrjhamron/feast/pkg/protocol"
 	"github.com/qrjhamron/feast/pkg/state"
+	"github.com/qrjhamron/feast/pkg/world"
 )
 
 func applyGravityTick(st PlayerState, belowPassable bool) PlayerState {
@@ -16,10 +22,140 @@ func applyGravityTick(st PlayerState, belowPassable bool) PlayerState {
 		st.OnGround = false
 		return st
 	}
-	st.Y = float64(int(st.Y))
+	st.Y = math.Floor(st.Y)
 	st.VelocityY = 0
 	st.OnGround = true
 	return st
+}
+
+func (c *Client) isSupportLostForState(st PlayerState) bool {
+	feetX := int(math.Floor(st.X))
+	feetZ := int(math.Floor(st.Z))
+	belowY := int(math.Floor(st.Y)) - 1
+
+	isAirOrReplaceable := func(x, y, z int) bool {
+		_, err := c.world.GetBlock(x, y, z)
+		if err != nil {
+			// Unloaded blocks are treated as solid support to prevent falling into the void.
+			return false
+		}
+		return c.world.IsReplaceable(world.BlockPos{X: int32(x), Y: int32(y), Z: int32(z)})
+	}
+
+	// 1. Check if the block directly under the bot's feet is air or replaceable.
+	if !isAirOrReplaceable(feetX, belowY, feetZ) {
+		return false
+	}
+
+	// 2. Check if the entire footprint support of the bot (XZ radius 0.3 around the bot) is removed
+	minX := int(math.Floor(st.X - 0.3))
+	maxX := int(math.Floor(st.X + 0.3))
+	minZ := int(math.Floor(st.Z - 0.3))
+	maxZ := int(math.Floor(st.Z + 0.3))
+
+	for x := minX; x <= maxX; x++ {
+		for z := minZ; z <= maxZ; z++ {
+			if !isAirOrReplaceable(x, belowY, z) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// IsSupportLost checks if all blocks under the bot's footprint (XZ radius 0.3 around the bot) at Y = floor(Y)-1 are air or replaceable.
+func (c *Client) IsSupportLost() bool {
+	return c.isSupportLostForState(c.PlayerState())
+}
+
+// WaitForGround applies gravity ticks and sends position packets until the bot lands or a timeout is reached.
+func (c *Client) WaitForGround(ctx context.Context) error {
+	if !c.AcquireMovement() {
+		return nil
+	}
+	defer c.ReleaseMovement()
+
+	if !c.IsSupportLost() {
+		return nil
+	}
+
+	startY := c.PlayerState().Y
+	fmt.Printf("[gravity] support_lost=true\n")
+	fmt.Printf("[gravity] start_y=%v\n", startY)
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	packetsSent := 0
+	timeoutChan := time.After(10 * time.Second)
+
+	for {
+		select {
+		case <-ctx.Done():
+			st := c.PlayerState()
+			fmt.Printf("[gravity] final_y=%v\n", st.Y)
+			fmt.Printf("[gravity] grounded=%v\n", st.OnGround)
+			fmt.Printf("[gravity] packets_sent=%d\n", packetsSent)
+			fmt.Printf("[gravity] result=FAIL\n")
+			return ctx.Err()
+		case <-timeoutChan:
+			st := c.PlayerState()
+			fmt.Printf("[gravity] final_y=%v\n", st.Y)
+			fmt.Printf("[gravity] grounded=%v\n", st.OnGround)
+			fmt.Printf("[gravity] packets_sent=%d\n", packetsSent)
+			fmt.Printf("[gravity] result=FAIL\n")
+			return ErrGravityTimeout
+		case <-ticker.C:
+			st := c.PlayerState()
+			belowPassable := c.isSupportLostForState(st)
+			if !belowPassable {
+				// Grounded! Apply gravity tick with belowPassable=false to snap.
+				next := applyGravityTick(st, false)
+				c.stateMu.Lock()
+				c.player = next
+				c.stateMu.Unlock()
+
+				// Send final position packet
+				pkt := &protocol.PlayServerboundSetPlayerPositionAndRotationPacket{
+					X:        next.X,
+					Y:        next.Y,
+					Z:        next.Z,
+					Yaw:      next.Yaw,
+					Pitch:    next.Pitch,
+					OnGround: next.OnGround,
+				}
+				if err := c.writePacket(pkt); err != nil {
+					return err
+				}
+				packetsSent++
+
+				fmt.Printf("[gravity] final_y=%v\n", next.Y)
+				fmt.Printf("[gravity] grounded=true\n")
+				fmt.Printf("[gravity] packets_sent=%d\n", packetsSent)
+				fmt.Printf("[gravity] result=PASS\n")
+				return nil
+			}
+
+			// Airborne, apply gravity tick
+			next := applyGravityTick(st, true)
+			c.stateMu.Lock()
+			c.player = next
+			c.stateMu.Unlock()
+
+			pkt := &protocol.PlayServerboundSetPlayerPositionAndRotationPacket{
+				X:        next.X,
+				Y:        next.Y,
+				Z:        next.Z,
+				Yaw:      next.Yaw,
+				Pitch:    next.Pitch,
+				OnGround: next.OnGround,
+			}
+			if err := c.writePacket(pkt); err != nil {
+				return err
+			}
+			packetsSent++
+		}
+	}
 }
 
 func (c *Client) gravityTick() {

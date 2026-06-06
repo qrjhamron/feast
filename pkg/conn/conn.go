@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/qrjhamron/feast/pkg/protocol"
@@ -20,6 +21,7 @@ type Conn struct {
 	bw                   *bufio.Writer
 	pr                   *protocol.Reader
 	compressionThreshold int
+	closed               atomic.Bool
 }
 
 // New creates a new protocol connection wrapper.
@@ -35,7 +37,13 @@ func (c *Conn) SetCompression(threshold int) {
 }
 
 // ReadPacket reads one framed packet from the stream.
+//
+// After [Conn.Close] it returns a wrapped net.ErrClosed (recognizable via
+// errors.Is(err, net.ErrClosed)) without touching the underlying socket.
 func (c *Conn) ReadPacket() (*protocol.RawPacket, error) {
+	if c.closed.Load() {
+		return nil, fmt.Errorf("conn: read after close: %w", net.ErrClosed)
+	}
 	frameLen, err := c.pr.ReadVarInt()
 	if err != nil {
 		return nil, err
@@ -71,7 +79,13 @@ func (c *Conn) ReadPacket() (*protocol.RawPacket, error) {
 }
 
 // WritePacket writes one typed packet to the stream.
+//
+// After [Conn.Close] it returns a wrapped net.ErrClosed (recognizable via
+// errors.Is(err, net.ErrClosed)) without touching the underlying socket.
 func (c *Conn) WritePacket(p protocol.Packet) error {
+	if c.closed.Load() {
+		return fmt.Errorf("conn: write after close: %w", net.ErrClosed)
+	}
 	var payload bytes.Buffer
 	pw := protocol.NewWriter(&payload)
 	if err := pw.WriteVarInt(p.PacketID()); err != nil {
@@ -100,8 +114,12 @@ func (c *Conn) WritePacket(p protocol.Packet) error {
 	return c.bw.Flush()
 }
 
-// Close closes the underlying network connection.
+// Close closes the underlying network connection. It is idempotent: the first
+// call closes the socket, and subsequent calls are no-ops that return nil.
 func (c *Conn) Close() error {
+	if c.closed.Swap(true) {
+		return nil
+	}
 	return c.raw.Close()
 }
 
