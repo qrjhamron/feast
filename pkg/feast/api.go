@@ -5,10 +5,11 @@
 // alpha/experimental and does not support online-mode authentication,
 // encryption, or multi-version protocols.
 //
-// The beginner path is [Connect], [Client.WaitUntilReady], typed event hooks,
-// world queries, navigation, chat, and block/container actions. Low-level
-// packet, event-bus, HPA*, movement-authority, and smoke-planning APIs are
-// marked Advanced in their GoDoc.
+// The beginner path is [Connect], [Client.WaitUntilReady], [Client.State],
+// typed event hooks, waiter helpers, world queries, navigation, chat, and
+// block/container actions. Low-level packet, raw event-bus, HPA*,
+// movement-authority, and smoke-planning APIs are marked Advanced in their
+// GoDoc.
 //
 // # Quick start
 //
@@ -801,6 +802,13 @@ func (c *Client) OnPosition(fn func(PositionEvent)) func() {
 	return func() { c.bus.Off(id) }
 }
 
+// OnPositionSync registers fn for server position-sync events.
+//
+// It is a discoverability-friendly alias for [Client.OnPosition].
+func (c *Client) OnPositionSync(fn func(PositionEvent)) func() {
+	return c.OnPosition(fn)
+}
+
 // OnBlockUpdate registers fn for block-state-change events.
 func (c *Client) OnBlockUpdate(fn func(BlockUpdateEvent)) func() {
 	id, _ := c.bus.On("block_update", func(e state.Event) {
@@ -846,6 +854,16 @@ func (c *Client) OnEntityRemove(fn func(EntityEvent)) func() {
 	id, _ := c.bus.On("entity_remove", func(e state.Event) {
 		if ev, ok := e.(state.EntityRemoveEvent); ok {
 			fn(EntityEvent{Entity: &world.Entity{ID: ev.EntityID}, Kind: "remove"})
+		}
+	})
+	return func() { c.bus.Off(id) }
+}
+
+// OnRespawn registers fn for respawn events.
+func (c *Client) OnRespawn(fn func(state.RespawnEvent)) func() {
+	id, _ := c.bus.On("respawn", func(e state.Event) {
+		if ev, ok := e.(state.RespawnEvent); ok {
+			fn(ev)
 		}
 	})
 	return func() { c.bus.Off(id) }

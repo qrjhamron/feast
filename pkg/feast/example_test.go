@@ -9,6 +9,7 @@ import (
 
 	"github.com/qrjhamron/feast/pkg/feast"
 	"github.com/qrjhamron/feast/pkg/nav/goal"
+	"github.com/qrjhamron/feast/pkg/state"
 )
 
 func ExampleConnect() {
@@ -118,4 +119,58 @@ func ExampleClient_PlaceBlockSurvival() {
 		}
 		log.Fatal(err)
 	}
+}
+
+func ExampleClient_State() {
+	bot := feast.NewClient(feast.Options{Username: "FeastGoBot"})
+	snap := bot.State()
+	fmt.Println(snap.Username, snap.Ready)
+}
+
+func ExampleClient_WaitForPositionSync() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bot := feast.NewClient(feast.Options{})
+	_ = bot.WaitForPositionSync(ctx)
+}
+
+func ExampleClient_WaitForBlockUpdate() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bot := feast.NewClient(feast.Options{})
+	_, _ = bot.WaitForBlockUpdate(ctx, 0, 64, 0)
+}
+
+func ExampleClient_WaitForBlockState() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bot := feast.NewClient(feast.Options{})
+	_ = bot.WaitForBlockState(ctx, 0, 64, 0, "stone")
+}
+
+func ExampleClient_OnRespawn() {
+	bot := feast.NewClient(feast.Options{})
+	unsub := bot.OnRespawn(func(ev state.RespawnEvent) {
+		fmt.Println(ev.DimensionName)
+	})
+	defer unsub()
+}
+
+func ExampleClient_OnBlockUpdate() {
+	bot := feast.NewClient(feast.Options{})
+	unsub := bot.OnBlockUpdate(func(ev feast.BlockUpdateEvent) {
+		fmt.Println(ev.X, ev.Y, ev.Z)
+	})
+	defer unsub()
+}
+
+func ExampleClient_PlaceBlockWithResult() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	bot := feast.NewClient(feast.Options{})
+	_, _ = bot.PlaceBlockWithResult(ctx, feast.BlockPos{X: 0, Y: 64, Z: 0}, feast.FaceUp)
 }

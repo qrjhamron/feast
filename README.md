@@ -13,7 +13,7 @@ Typed packets. Real world state. Navigation and movement. Break/place. Inventory
 
 </div>
 
-FeastGo is a typed, embeddable bot runtime in pure Go: no Node.js, no browser runtime, no Electron. It connects to offline-mode Minecraft Java Edition 1.20.4 servers, including Paper 1.20.4, tracks world state, navigates terrain, breaks and places blocks, manages inventory, and reacts to events from Go code.
+FeastGo is a typed, embeddable bot runtime in pure Go: no Node.js, no browser runtime, no Electron. It connects to offline-mode Minecraft Java Edition 1.20.4 servers, including Paper 1.20.4, tracks world state, exposes state snapshots and waiters, navigates terrain, breaks and places blocks, manages inventory, and reacts to events from Go code.
 
 ---
 
@@ -163,6 +163,12 @@ feast.NewClient(opts)           → *Client           // create without connecti
 client.Connect()                → error
 client.Disconnect()             → error
 client.WaitUntilReady(ctx)      → error             // blocks until first position sync
+client.WaitForPositionSync(ctx) → error             // alias for WaitUntilReady
+
+// Snapshot / waiters
+client.State()                  → StateSnapshot
+client.WaitForBlockUpdate(ctx, x, y, z) → (world.BlockState, error)
+client.WaitForBlockState(ctx, x, y, z, name) → error
 
 // World state
 client.Position()               → world.Vec3
@@ -183,6 +189,7 @@ client.BreakBlock(ctx, pos, opts...) → error
 client.BreakBlockWithResult(ctx, pos, opts...) → BreakResult, error
 client.PlaceBlockCreative(ctx, target, face, blockName) → error
 client.PlaceBlockSurvival(ctx, target, face) → error
+client.PlaceBlockWithResult(ctx, target, face) → PlaceResult, error
 client.Chat(message)            → error
 
 // Inventory
@@ -195,7 +202,9 @@ client.OnReady(func())
 client.OnChat(func(ChatEvent))
 client.OnHealth(func(HealthEvent))
 client.OnPosition(func(PositionEvent))
+client.OnPositionSync(func(PositionEvent))
 client.OnBlockUpdate(func(BlockUpdateEvent))
+client.OnRespawn(func(state.RespawnEvent))
 client.OnEntitySpawn(func(EntityEvent))
 client.OnEntityMove(func(EntityEvent))
 client.OnEntityRemove(func(EntityEvent))
