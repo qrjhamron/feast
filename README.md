@@ -2,9 +2,9 @@
 
 # FeastGo
 
-**A Go-native Minecraft Java Edition bot framework for Protocol 765 / Minecraft 1.20.4.**
+**A Go-native Minecraft Java Edition bot framework and bot client for Protocol 765 / Minecraft 1.20.4.**
 
-Typed packets. Real world state. Navigation. Break/place. Inventory. Containers. Built for offline-mode bot development in Go.
+Typed packets. Real world state. Navigation and movement. Break/place. Inventory. Containers. Built for offline-mode Minecraft bot development in Go.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/qrjhamron/feast.svg)](https://pkg.go.dev/github.com/qrjhamron/feast)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
@@ -13,7 +13,7 @@ Typed packets. Real world state. Navigation. Break/place. Inventory. Containers.
 
 </div>
 
-FeastGo is a typed, embeddable bot runtime in pure Go: no Node.js, no browser runtime, no Electron. It connects to offline-mode 1.20.4 servers, tracks world state, navigates terrain, breaks and places blocks, manages inventory, and reacts to events from Go code.
+FeastGo is a typed, embeddable bot runtime in pure Go: no Node.js, no browser runtime, no Electron. It connects to offline-mode Minecraft Java Edition 1.20.4 servers, including Paper 1.20.4, tracks world state, navigates terrain, breaks and places blocks, manages inventory, and reacts to events from Go code.
 
 ---
 
