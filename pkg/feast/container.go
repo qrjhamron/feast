@@ -24,6 +24,7 @@ var (
 // Errors moved to errors.go
 )
 
+// Items returns a copy of the currently tracked container slots.
 func (ct *Container) Items() map[int]ItemStack {
 	if ct == nil || ct.client == nil {
 		return nil
@@ -31,6 +32,8 @@ func (ct *Container) Items() map[int]ItemStack {
 	return ct.client.ContainerItems(ct.ID)
 }
 
+// Deposit moves count items with itemName from the player inventory into this
+// container.
 func (ct *Container) Deposit(ctx context.Context, itemName string, count int) error {
 	if ct == nil || ct.client == nil {
 		return ErrContainerNotOpen
@@ -38,6 +41,8 @@ func (ct *Container) Deposit(ctx context.Context, itemName string, count int) er
 	return ct.client.DepositToContainer(ctx, ct.ID, itemName, count)
 }
 
+// Withdraw moves count items with itemName from this container into the player
+// inventory.
 func (ct *Container) Withdraw(ctx context.Context, itemName string, count int) error {
 	if ct == nil || ct.client == nil {
 		return ErrContainerNotOpen
@@ -45,6 +50,7 @@ func (ct *Container) Withdraw(ctx context.Context, itemName string, count int) e
 	return ct.client.WithdrawFromContainer(ctx, ct.ID, itemName, count)
 }
 
+// Close closes this container window.
 func (ct *Container) Close(ctx context.Context) error {
 	if ct == nil || ct.client == nil {
 		return ErrContainerNotOpen
@@ -52,6 +58,8 @@ func (ct *Container) Close(ctx context.Context) error {
 	return ct.client.CloseContainer(ctx, ct.ID)
 }
 
+// OpenChest opens the chest-like container at pos and waits for the server to
+// send an open-screen packet.
 func (c *Client) OpenChest(ctx context.Context, pos BlockPos) (*Container, error) {
 	ch := make(chan *Container, 1)
 	handlerID, _ := c.bus.On("open_screen", func(e state.Event) {
@@ -101,6 +109,8 @@ func (c *Client) OpenChest(ctx context.Context, pos BlockPos) (*Container, error
 	}
 }
 
+// CloseContainer closes the server window with id and clears tracked local
+// state for that container.
 func (c *Client) CloseContainer(ctx context.Context, id int32) error {
 	err := c.WritePacket(&protocol.PlayServerboundCloseContainerPacket{
 		WindowID: byte(id),
@@ -120,6 +130,7 @@ func (c *Client) CloseContainer(ctx context.Context, id int32) error {
 	return nil
 }
 
+// ContainerItems returns a copy of the tracked slot contents for container id.
 func (c *Client) ContainerItems(id int32) map[int]ItemStack {
 	c.containerMu.RLock()
 	defer c.containerMu.RUnlock()
@@ -192,12 +203,15 @@ func (c *Client) trackContainerContentNonZero(windowID int32, slots []protocol.I
 	c.containerSlots[windowID] = m
 }
 
+// ActiveContainer returns the currently open container, if any.
 func (c *Client) ActiveContainer() *Container {
 	c.containerMu.RLock()
 	defer c.containerMu.RUnlock()
 	return c.activeContainer
 }
 
+// DepositToContainer moves count items with itemName from the player inventory
+// into the open container with containerID.
 func (c *Client) DepositToContainer(ctx context.Context, containerID int32, itemName string, count int) error {
 	if count <= 0 {
 		return fmt.Errorf("invalid deposit count %d", count)
@@ -223,6 +237,8 @@ func (c *Client) DepositToContainer(ctx context.Context, containerID int32, item
 	return nil
 }
 
+// WithdrawFromContainer moves count items with itemName from the open container
+// with containerID into the player inventory.
 func (c *Client) WithdrawFromContainer(ctx context.Context, containerID int32, itemName string, count int) error {
 	if count <= 0 {
 		return fmt.Errorf("invalid withdraw count %d", count)

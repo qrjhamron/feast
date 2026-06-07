@@ -1,8 +1,19 @@
+<div align="center">
+
 # FeastGo
 
-A Go-native Minecraft Java Edition bot framework. Protocol 765 / Minecraft 1.20.4.
+**A Go-native Minecraft Java Edition bot framework for Protocol 765 / Minecraft 1.20.4.**
 
-FeastGo gives you a fully typed, embeddable bot runtime in pure Go — no Node.js, no browser runtime, no Electron. Connect to an offline-mode 1.20.4 server, track world state, navigate terrain, break and place blocks, manage inventory, and react to events, all from clean Go code.
+Typed packets. Real world state. Navigation. Break/place. Inventory. Containers. Built for offline-mode bot development in Go.
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/qrjhamron/feast.svg)](https://pkg.go.dev/github.com/qrjhamron/feast)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Minecraft](https://img.shields.io/badge/Minecraft-1.20.4%20%2F%20Protocol%20765-brightgreen)
+![Status](https://img.shields.io/badge/status-alpha-orange)
+
+</div>
+
+FeastGo is a typed, embeddable bot runtime in pure Go: no Node.js, no browser runtime, no Electron. It connects to offline-mode 1.20.4 servers, tracks world state, navigates terrain, breaks and places blocks, manages inventory, and reacts to events from Go code.
 
 ---
 
@@ -18,7 +29,7 @@ FeastGo gives you a fully typed, embeddable bot runtime in pure Go — no Node.j
 
 ## Status
 
-**Alpha / experimental.** The core protocol stack is working and tested against a local Paper 1.20.4 server. APIs are stable enough to build real bots with, but may change as the library matures.
+**Alpha / experimental.** The core protocol stack is working and tested against a local Paper 1.20.4 server. APIs are usable for experiments and local bots, but may change before a 1.0 release.
 
 | | |
 |---|---|
@@ -61,8 +72,10 @@ FeastGo gives you a fully typed, embeddable bot runtime in pure Go — no Node.j
 Requires Go 1.22+.
 
 ```bash
-go get github.com/qrjhamron/feast/pkg/feast
+go get github.com/qrjhamron/feast
 ```
+
+Import the public client package as `github.com/qrjhamron/feast/pkg/feast`.
 
 ---
 
@@ -162,10 +175,12 @@ client.FindNearestBlock(name, radius) → (BlockHit, bool)
 
 // Navigation
 client.NavigateTo(ctx, goal)    → error
+client.NavigateWithResult(ctx, goal) → NavigateResult, error
 client.StopNavigation()
 
 // Interaction
-client.BreakBlock(ctx, pos)     → error
+client.BreakBlock(ctx, pos, opts...) → error
+client.BreakBlockWithResult(ctx, pos, opts...) → BreakResult, error
 client.PlaceBlockCreative(ctx, target, face, blockName) → error
 client.PlaceBlockSurvival(ctx, target, face) → error
 client.Chat(message)            → error
@@ -187,6 +202,15 @@ client.OnEntityRemove(func(EntityEvent))
 client.OnError(func(error))
 client.OnDisconnect(func(error))
 ```
+
+`BreakOptions{AutoTool: true}` asks FeastGo to select an appropriate hotbar
+tool before breaking. The zero value remains safe: no auto-selection, survival
+timing, loaded-chunk checks, unsafe-target refusal, and server block-update
+confirmation.
+
+Low-level packet, raw event-bus, movement-authority, HPA* graph, and creative
+smoke-planning APIs are marked `Advanced:` in GoDoc. They are exposed for
+diagnostics and harnesses, not as the recommended beginner path.
 
 ---
 
@@ -220,6 +244,9 @@ Three reliability pieces were added for Paper 1.20.4:
 ```bash
 MC_HOST=127.0.0.1 go run ./examples/basic_join
 ```
+
+The `pkg/feast` package also includes compile-only GoDoc examples for
+pkg.go.dev. They do not require a live server during `go test`.
 
 ---
 

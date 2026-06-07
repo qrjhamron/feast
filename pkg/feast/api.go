@@ -1,7 +1,14 @@
-// Package feast is the primary entry point for the FeastGo Minecraft bot library.
+// Package feast provides a Go-native offline-mode Minecraft Java Edition
+// Protocol 765 bot client.
 //
-// FeastGo targets Minecraft Java Edition 1.20.4 (protocol 765) in offline mode only.
-// It does not support online-mode auth, encryption, or multi-version protocols.
+// FeastGo targets Minecraft Java Edition 1.20.4 in offline mode only. It is
+// alpha/experimental and does not support online-mode authentication,
+// encryption, or multi-version protocols.
+//
+// The beginner path is [Connect], [Client.WaitUntilReady], typed event hooks,
+// world queries, navigation, chat, and block/container actions. Low-level
+// packet, event-bus, HPA*, movement-authority, and smoke-planning APIs are
+// marked Advanced in their GoDoc.
 //
 // # Quick start
 //
@@ -24,6 +31,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -110,10 +118,20 @@ type Vec3 = world.Vec3
 // and waits until it enters the Play state. It returns an error if the
 // connection or login sequence fails.
 //
-// The context is used only for the initial connection attempt; the running
-// client lifecycle is managed separately via [Client.Disconnect].
+// The context is used for the initial network dial. The running client
+// lifecycle is managed separately via [Client.Disconnect].
 func Connect(ctx context.Context, opts Options) (*Client, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c := NewClient(opts)
+	var dialer net.Dialer
+	c.dialFunc = func(network, address string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, address)
+	}
 	if err := c.Connect(); err != nil {
 		return nil, err
 	}
@@ -151,6 +169,13 @@ func (c *Client) FindBlocks(name string, count, radius int) []world.BlockHit {
 	return c.world.FindBlocks(c.Position(), name, count, radius)
 }
 
+// FindPlaceTargetNear searches loaded blocks around origin for a replaceable
+// target block with a solid neighboring support block.
+//
+// It returns the target block to place into, the face to pass to
+// [Client.PlaceBlockSurvival], and ok=false if no loaded safe target is found.
+// blockName is reserved for future block-specific placement rules; current
+// placement safety is based on replaceability and support solidity.
 func FindPlaceTargetNear(w *world.World, origin Vec3, blockName string, radius int) (target BlockPos, face Direction, ok bool) {
 	if w == nil || radius < 0 {
 		return BlockPos{}, FaceUp, false
@@ -196,11 +221,7 @@ func FindPlaceTargetNear(w *world.World, origin Vec3, blockName string, radius i
 
 // ─── Navigation ──────────────────────────────────────────────────────────────
 
-// NavigateTo navigates the bot to the given goal and blocks until the goal is
-// satisfied, navigation fails, or the context is cancelled.
-//
-// Use [goal.Block], [goal.XZ], [goal.Proximity], or [goal.NearEntity] to create a goal.
-// NavigateResult contains details about a completed navigation.
+// NavigateResult contains details about a completed navigation attempt.
 type NavigateResult struct {
 	// Reached is true if the goal was satisfied.
 	Reached bool
@@ -220,7 +241,12 @@ func (c *Client) NavigateTo(ctx context.Context, g goal.Goal, opts ...MovementOp
 	return err
 }
 
-// NavigateWithResult executes pathfinding and movement towards the given goal.
+// NavigateWithResult navigates the bot to the given goal and blocks until the
+// goal is satisfied, navigation fails, or ctx is cancelled.
+//
+// Use [goal.NewGoalBlock], [goal.NewGoalXZ], [goal.NewGoalProximity], or
+// [goal.NewGoalNear] to create a goal. The zero-value [MovementOptions] uses
+// the client's current movement profile.
 func (c *Client) NavigateWithResult(ctx context.Context, g goal.Goal, opts ...MovementOptions) (NavigateResult, error) {
 	startTime := time.Now()
 	profile := c.MovementProfile()
@@ -306,15 +332,22 @@ func (c *Client) navigateTo(x, y, z int) error {
 
 // ─── Block interaction ────────────────────────────────────────────────────────
 
-// BreakOptions configures the behavior of a block-breaking action.
+// BreakOptions configures one block-breaking action.
+//
+// The zero value is safe: FeastGo breaks with the currently held item, applies
+// survival timing, refuses unloaded chunks, refuses unsafe targets under the
+// bot, and waits for a server block update.
 type BreakOptions struct {
 	// AutoTool enables automatic selection of the best tool from the inventory.
 	AutoTool bool
-	// Creative ignores block hardness delays (acts instantly).
+	// Creative skips block-hardness delay for creative-mode or test harness use.
 	Creative bool
 }
 
-// BreakResult contains details about a completed block break action.
+// BreakResult contains details about a successful block break action.
+//
+// On failure, [Client.BreakBlockWithResult] returns the zero result and the
+// original error, which can be checked with [errors.Is] for sentinel errors.
 type BreakResult struct {
 	// Position is the block that was broken.
 	Position BlockPos
@@ -334,7 +367,8 @@ func (c *Client) BreakBlock(ctx context.Context, pos BlockPos, opts ...BreakOpti
 	return err
 }
 
-// BreakBlockWithResult sends packets to dig the target block and waits for the server to confirm the break.
+// BreakBlockWithResult sends dig packets for pos and waits for the server to
+// confirm the break with a block update.
 func (c *Client) BreakBlockWithResult(ctx context.Context, pos BlockPos, opts ...BreakOptions) (BreakResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -690,8 +724,12 @@ func (c *Client) PlaceBlockCreative(ctx context.Context, target BlockPos, face D
 }
 
 // PlaceBlockSurvival places a block from the hotbar in survival mode.
-// target is the air block to place into; face is which face of the support block
-// the placement is against.
+//
+// target is the replaceable block to place into; face is the face of the
+// neighboring support block the placement is against. The action refuses
+// unloaded targets/supports, non-replaceable targets, non-solid support,
+// out-of-reach targets, player/entity overlap, context cancellation, timeout,
+// and server rollback.
 func (c *Client) PlaceBlockSurvival(ctx context.Context, target BlockPos, face Direction) error {
 	return c.PlaceBlockSurvivalInternal(ctx, target, face)
 }

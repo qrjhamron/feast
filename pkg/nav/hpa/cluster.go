@@ -1,7 +1,6 @@
 package hpa
 
 import (
-	"log"
 	"sync"
 
 	"github.com/qrjhamron/feast/pkg/state"
@@ -278,7 +277,5 @@ func (m *ClusterManager) Invalidate(blockX, blockZ int) {
 	} else if localZ == 15 {
 		m.GetOrCreate(chunkX, chunkZ+1).dirty = true
 	}
-	if DebugLogs {
-		log.Printf("[hpa] cluster invalidate block=(%d,%d) clusters=%d built=%d", blockX, blockZ, m.Count(), m.BuiltCount())
-	}
+	debugf("[hpa] cluster invalidate block=(%d,%d) clusters=%d built=%d", blockX, blockZ, m.Count(), m.BuiltCount())
 }

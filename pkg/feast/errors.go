@@ -22,7 +22,7 @@ var (
 	ErrPositionNotSynced = errors.New("feast: position not synced")
 	ErrChunkNotLoaded    = world.ErrChunkNotLoaded
 
-	// Inventory / block-placement errors (moved from inventory.go).
+	// Inventory and block-placement errors.
 	ErrHeldItemUnknown     = errors.New("held item unknown")
 	ErrBlockNotReplaceable = errors.New("block not replaceable")
 	ErrNoSupportBlock      = errors.New("no support block")
@@ -42,7 +42,7 @@ var (
 	ErrNoPath          = errors.New("feast: no path found")
 	ErrGravityTimeout  = errors.New("feast: gravity fall timeout")
 
-	// Container errors (moved from container.go).
+	// Container errors.
 	ErrContainerNotOpen       = errors.New("container not open")
 	ErrContainerSlotNotFound  = errors.New("container slot not found")
 	ErrInventoryItemNotFound  = errors.New("inventory item not found")

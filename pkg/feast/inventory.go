@@ -21,9 +21,12 @@ const (
 	playerInventoryHotbarStart int16 = 36
 	playerInventoryHotbarEnd   int16 = 44
 
-	CreativeSmokeMode     = "creative_smoke"
+	// CreativeSmokeMode is the placement-plan mode used by creative smoke helpers.
+	CreativeSmokeMode = "creative_smoke"
+	// CreativeSmokeItemName is the default block item used by creative smoke helpers.
 	CreativeSmokeItemName = "stone"
-	CreativeSmokeItemID   = int32(1)
+	// CreativeSmokeItemID is the protocol item ID for CreativeSmokeItemName.
+	CreativeSmokeItemID = int32(1)
 )
 
 // ItemStack represents an item in an inventory slot.
@@ -37,18 +40,32 @@ type InventoryState struct {
 	Slots map[int]ItemStack
 }
 
-// PlacementPlan describes the sequence of actions and expected outcomes for placing a block.
+// PlacementPlan describes a precomputed creative placement operation.
+//
+// Advanced: this is primarily for smoke tests and protocol diagnostics. Normal
+// callers should use [Client.PlaceBlockCreative] or [Client.PlaceBlockSurvival].
 type PlacementPlan struct {
-	Target         protocol.BlockPos
-	Support        protocol.BlockPos
-	Face           byte
-	OldState       world.BlockState
-	HeldItemName   string
-	HeldItemID     int32
-	SelectedSlot   int
-	InventorySlot  int16
-	Sequence       int32
-	Mode           string
+	// Target is the block position expected to change.
+	Target protocol.BlockPos
+	// Support is the neighboring support block clicked by the placement packet.
+	Support protocol.BlockPos
+	// Face is the clicked support face.
+	Face byte
+	// OldState is the target state before placement.
+	OldState world.BlockState
+	// HeldItemName is the item name selected for placement.
+	HeldItemName string
+	// HeldItemID is the protocol item ID selected for placement.
+	HeldItemID int32
+	// SelectedSlot is the hotbar slot selected for placement.
+	SelectedSlot int
+	// InventorySlot is the absolute player-inventory slot used for the item.
+	InventorySlot int16
+	// Sequence is the block-change sequence sent to the server.
+	Sequence int32
+	// Mode identifies the plan source.
+	Mode string
+	// ExpectedPacket is the final packet sent to perform placement.
 	ExpectedPacket protocol.Packet
 }
 
@@ -202,6 +219,10 @@ func (c *Client) trackContainerContent(windowID int32, slots []protocol.ItemStac
 	}
 }
 
+// OverlapsPlayer reports whether target would intersect the bot's current
+// player hitbox.
+//
+// Advanced: normal placement calls run this safety check automatically.
 func (c *Client) OverlapsPlayer(target protocol.BlockPos) bool {
 	c.stateMu.RLock()
 	px, py, pz := c.player.X, c.player.Y, c.player.Z
@@ -223,6 +244,11 @@ func (c *Client) checkPlacementValidity(target protocol.BlockPos) error {
 	return c.world.RequireBlockLoaded(world.BlockPos(target))
 }
 
+// PlaceBlock sends a low-level UseItemOn packet for the currently held item.
+//
+// Advanced: this method does not wait for server confirmation. Prefer
+// [Client.PlaceBlockSurvival] or [Client.PlaceBlockCreative] for public bot
+// actions.
 func (c *Client) PlaceBlock(target protocol.BlockPos, face byte) error {
 	c.inventoryMu.RLock()
 	slot := 36 + c.inventory.SelectedHotbarSlot
@@ -594,14 +620,19 @@ func (c *Client) ExecuteCreativeSmokePlacement(plan PlacementPlan) error {
 	return c.writePacket(plan.ExpectedPacket)
 }
 
+// ItemNameFromID returns the registry item name for a Protocol 765 item ID.
 func ItemNameFromID(id int32) (string, bool) {
 	return registry.ItemNameFromID(id)
 }
 
+// BlockNameFromItem returns the block name placed by item, if item represents a
+// placeable block.
 func BlockNameFromItem(item ItemStack) (string, bool) {
 	return registry.BlockNameFromItem(item)
 }
 
+// IsPlaceableBlockItem reports whether item represents a block that can be
+// placed into the world.
 func IsPlaceableBlockItem(item ItemStack) bool {
 	return registry.IsPlaceableBlockItem(item)
 }

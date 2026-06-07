@@ -3,7 +3,6 @@ package hpa
 import (
 	"context"
 	"errors"
-	"log"
 	"math"
 
 	"github.com/qrjhamron/feast/pkg/nav/executor"
@@ -49,14 +48,14 @@ func (n *HPANavigator) Navigate(ctx context.Context, client executor.Client, sta
 
 		res := n.Planner.Plan(start, target, goalDef)
 		if res.Status != 0 { // PlanFound is 0 usually
-			log.Printf("[hpa] no abstract path found, falling back to local A*")
+			debugf("[hpa] no abstract path found, falling back to local A*")
 			localRes := planner.Plan(ctx, start[0], start[1], start[2], goalDef, n.World)
 			if localRes.Status != planner.PlanFound {
 				return errors.New("fallback local planner failed to find path")
 			}
 			return executor.Execute(ctx, client, n.World, goalDef, localRes.Path)
 		}
-		log.Printf("[hpa] abstract path found %d clusters", len(res.AbstractPath))
+		debugf("[hpa] abstract path found %d clusters", len(res.AbstractPath))
 
 		n.Updater.SetActiveRefiner(res.Refiner)
 
@@ -76,7 +75,7 @@ func (n *HPANavigator) Navigate(ctx context.Context, client executor.Client, sta
 			if len(segment) == 0 {
 				break
 			}
-			log.Printf("[hpa] refining cluster %d/%d", res.Refiner.CurrentIndex(), total)
+			debugf("[hpa] refining cluster %d/%d", res.Refiner.CurrentIndex(), total)
 
 			err := executor.Execute(ctx, client, n.World, goalDef, segment)
 			if err != nil {
@@ -95,7 +94,7 @@ func (n *HPANavigator) Navigate(ctx context.Context, client executor.Client, sta
 
 		n.Updater.SetActiveRefiner(nil)
 		if res.Refiner.IsComplete() || goalDef.Satisfied(start[0], start[1], start[2]) {
-			log.Printf("[hpa] arrived")
+			debugf("[hpa] arrived")
 			return nil
 		}
 

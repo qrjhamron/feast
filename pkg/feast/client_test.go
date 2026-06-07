@@ -118,6 +118,16 @@ func TestConnectMinimalLoginSequence(t *testing.T) {
 	_ = c.Disconnect()
 }
 
+func TestConnectHonorsCanceledContextBeforeDial(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := Connect(ctx, Options{Host: "127.0.0.1", Port: "1", Username: "FeastBot"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Connect error=%v, want %v", err, context.Canceled)
+	}
+}
+
 func TestDisconnectIsIdempotentBeforeConnect(t *testing.T) {
 	c := NewClient(Options{})
 	if err := c.Close(); err != nil {

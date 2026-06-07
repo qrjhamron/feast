@@ -19,7 +19,10 @@ import (
 
 const protocolVersion765 int32 = 765
 
-// Options configures a FeastGo client connection and behavior.
+// Options configures a FeastGo client connection and runtime diagnostics.
+//
+// FeastGo supports Minecraft Java Edition 1.20.4 / Protocol 765 in offline
+// mode only. Debug logging is disabled by default.
 type Options struct {
 	// Host is the server hostname or IP address.
 	Host string
@@ -27,16 +30,17 @@ type Options struct {
 	Port string
 	// Username is the player's in-game name.
 	Username string
-	// Debug enables verbose client logging.
+	// Debug enables verbose client logging for state transitions and actions.
 	Debug bool
-	// DebugPackets enables logging of all sent/received packets.
+	// DebugPackets enables verbose packet logging. It is intended for protocol
+	// debugging and can be noisy on busy servers.
 	DebugPackets bool
-	// Logger is an optional custom log handler.
+	// Logger is an optional custom log handler used when Debug is true.
 	Logger func(LogEvent)
 }
 
 // Client represents an active FeastGo bot connection. It provides methods to
-// interact with the world, entities, and inventory, and dispatches events.
+// interact with the world, entities, inventory, navigation, and typed events.
 type Client struct {
 	opts       Options
 	conn       *feastconn.Conn
@@ -96,43 +100,67 @@ type Client struct {
 	containerMu       sync.RWMutex
 }
 
-// LogEvent is a structured debug log entry emitted by the client.
+// LogEvent is a structured debug log entry emitted by the client when
+// [Options.Debug] is true.
 type LogEvent struct {
-	Time     time.Time
-	Message  string
-	State    state.State
+	// Time is when the log entry was produced.
+	Time time.Time
+	// Message is the human-readable debug message.
+	Message string
+	// State is the current protocol state when the message was emitted.
+	State state.State
+	// PacketID is the packet ID associated with the log, or -1 when none applies.
 	PacketID int32
-	Error    error
+	// Error is the associated error, if any.
+	Error error
 }
 
 // ShutdownStatus records which phases of client shutdown completed.
 type ShutdownStatus struct {
-	Requested       bool
+	// Requested is true once shutdown has been signaled.
+	Requested bool
+	// TickLoopStopped is true once the heartbeat/tick loop has stopped.
 	TickLoopStopped bool
+	// ReadLoopStopped is true once the packet read loop has stopped.
 	ReadLoopStopped bool
-	NavLoopStopped  bool
-	SocketClosed    bool
+	// NavLoopStopped is true once the navigation loop has stopped.
+	NavLoopStopped bool
+	// SocketClosed is true once the underlying socket has been closed.
+	SocketClosed bool
 }
 
 // Stats is a point-in-time runtime snapshot.
 type Stats struct {
-	ConnectedAt        time.Time
-	ConnectedFor       time.Duration
-	PacketsReceived    uint64
-	PacketsSent        uint64
-	LastKeepAliveAt    time.Time
+	// ConnectedAt is the time the current connection was established.
+	ConnectedAt time.Time
+	// ConnectedFor is derived from ConnectedAt when connected.
+	ConnectedFor time.Duration
+	// PacketsReceived is the number of decoded packets received.
+	PacketsReceived uint64
+	// PacketsSent is the number of packets written.
+	PacketsSent uint64
+	// LastKeepAliveAt is the time of the most recent keep-alive response.
+	LastKeepAliveAt time.Time
+	// LastPositionSyncAt is the time of the most recent server position sync.
 	LastPositionSyncAt time.Time
-	CurrentState       state.State
+	// CurrentState is the current protocol state.
+	CurrentState state.State
 }
 
 // HPAStats is a point-in-time HPA* graph/debug snapshot.
 type HPAStats struct {
-	Chunks        int
-	Clusters      int
+	// Chunks is the number of loaded chunks known to the world model.
+	Chunks int
+	// Clusters is the number of HPA* clusters tracked.
+	Clusters int
+	// BuiltClusters is the number of HPA* clusters with built graph data.
 	BuiltClusters int
-	Entrances     int
-	GraphNodes    int
-	GraphEdges    int
+	// Entrances is the number of HPA* inter-cluster entrances.
+	Entrances int
+	// GraphNodes is the number of abstract graph nodes.
+	GraphNodes int
+	// GraphEdges is the number of abstract graph edges.
+	GraphEdges int
 }
 
 // PlayerState is the client's current best-known player state.
@@ -160,7 +188,10 @@ type PlayerState struct {
 	Saturation float32
 }
 
-// NewClient creates a new internal orchestrator client.
+// NewClient creates a client without opening a network connection.
+//
+// Use [Connect] for the beginner path. NewClient is useful when callers need
+// to register handlers or inspect state before calling [Client.Connect].
 func NewClient(opts Options) *Client {
 	c := &Client{
 		opts:              opts,
@@ -240,6 +271,8 @@ func (c *Client) GetPosition() (x, y, z float64, yaw, pitch float32) {
 	return st.X, st.Y, st.Z, st.Yaw, st.Pitch
 }
 
+// PositionSynced reports whether the client has received at least one server
+// position sync for the current connection.
 func (c *Client) PositionSynced() bool {
 	c.stateMu.RLock()
 	defer c.stateMu.RUnlock()
@@ -257,7 +290,11 @@ func (c *Client) WritePacket(p protocol.Packet) error {
 	return c.writePacket(p)
 }
 
-// Connect dials server, performs login/config, and starts play loops.
+// Connect dials the configured offline-mode server, performs login/config, and
+// starts play loops.
+//
+// Advanced: [Connect] is usually simpler because it creates the client and
+// honors a context for the network dial.
 func (c *Client) Connect() error {
 	address := net.JoinHostPort(c.opts.Host, c.opts.Port)
 	nc, err := c.dialFunc("tcp", address)
